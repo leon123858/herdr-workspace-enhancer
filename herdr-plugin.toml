@@ -1,0 +1,42 @@
+id = "workspace.enhancer"
+name = "Workspace Enhancer"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+description = "Workspace notes and archive/restore manager"
+platforms = ["linux", "windows"]
+
+[[build]]
+platforms = ["linux"]
+command = ["go", "build", "-o", "bin/herdr-workspace-enhancer", "./cmd/herdr-workspace-enhancer"]
+
+[[build]]
+platforms = ["windows"]
+command = ["go", "build", "-o", "bin/herdr-workspace-enhancer.exe", "./cmd/herdr-workspace-enhancer"]
+
+[[actions]]
+id = "open"
+title = "Workspace notes and archives"
+contexts = ["workspace"]
+platforms = ["linux"]
+command = ["./bin/herdr-workspace-enhancer", "--open"]
+
+[[actions]]
+id = "open-windows"
+title = "Workspace notes and archives"
+contexts = ["workspace"]
+platforms = ["windows"]
+command = ["./bin/herdr-workspace-enhancer.exe", "--open"]
+
+[[panes]]
+id = "manager"
+title = "Workspace Enhancer"
+placement = "tab"
+platforms = ["linux"]
+command = ["./bin/herdr-workspace-enhancer"]
+
+[[panes]]
+id = "manager-windows"
+title = "Workspace Enhancer"
+placement = "tab"
+platforms = ["windows"]
+command = ["./bin/herdr-workspace-enhancer.exe"]
