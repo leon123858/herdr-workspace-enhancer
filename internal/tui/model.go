@@ -4,11 +4,11 @@ package tui
 import (
 	"context"
 	"fmt"
-	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"herdr-workspace-enhancer/internal/layout"
+	textarea "herdr-workspace-enhancer/internal/noteeditor"
 	"herdr-workspace-enhancer/internal/state"
 	"herdr-workspace-enhancer/internal/workspace"
 	"strings"
@@ -182,6 +182,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = ""
 			case "esc":
 				m.mode = "edit"
+				return m, tea.EnableMouseCellMotion
 			}
 			return m, nil
 		}
@@ -190,15 +191,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+s":
 				m.save()
 				return m, nil
-			case "esc", "ctrl+c":
+			case "esc":
 				if m.editor.Value() != m.note.Text {
 					m.mode = "dirty"
 				} else {
 					m.mode = ""
 				}
-				return m, nil
+				return m, tea.DisableMouse
 			}
 			var cmd tea.Cmd
+			if mouse, ok := msg.(tea.MouseMsg); ok {
+				mouse.Y -= 2
+				msg = mouse
+			}
 			m.editor, cmd = m.editor.Update(msg)
 			return m, cmd
 		}
@@ -249,7 +254,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.editingID = r.ID
 				m.editor.SetValue(n.Text)
 				m.mode = "edit"
-				return m, m.editor.Focus()
+				return m, tea.Batch(m.editor.Focus(), tea.EnableMouseCellMotion)
 			}
 		case "a":
 			if r, ok := m.selected(); ok && (r.Status == "active" || r.Status == "archiving") {
@@ -277,6 +282,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.mode {
 	case "edit":
+		if mouse, ok := msg.(tea.MouseMsg); ok {
+			mouse.Y -= 2
+			msg = mouse
+		}
 		m.editor, cmd = m.editor.Update(msg)
 	case "search":
 		m.search, cmd = m.search.Update(msg)
