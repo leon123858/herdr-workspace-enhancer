@@ -22,8 +22,19 @@ type Service struct {
 	ManagerID     string
 }
 
+func (s *Service) managerIDs() (map[string]bool, error) {
+	ids, err := s.Store.ManagerIDs()
+	if err != nil {
+		return nil, err
+	}
+	if s.ManagerID != "" {
+		ids[s.ManagerID] = true
+	}
+	return ids, nil
+}
+
 func (s *Service) Refresh(ctx context.Context) ([]state.Record, error) {
-	unlock, e := s.Store.Lock("session")
+	unlock, e := s.Store.WaitLock(ctx, "session")
 	if e != nil {
 		return nil, e
 	}
@@ -36,9 +47,24 @@ func (s *Service) Refresh(ctx context.Context) ([]state.Record, error) {
 	if e != nil {
 		return nil, e
 	}
+	managers, e := s.managerIDs()
+	if e != nil {
+		return nil, e
+	}
+	// Remove old manager rows, but leave separately stored notes untouched.
+	retained := db.Records[:0]
+	for _, r := range db.Records {
+		if !managers[r.HostID] {
+			retained = append(retained, r)
+		}
+	}
+	db.Records = retained
 	// Reattach a restoration whose create reply was lost before HostID saved.
 	for i := range db.Records {
 		r := &db.Records[i]
+		if managers[r.HostID] {
+			continue
+		}
 		if r.Status != "restoring" || r.HostID != "" {
 			continue
 		}
@@ -53,13 +79,16 @@ func (s *Service) Refresh(ctx context.Context) ([]state.Record, error) {
 		}
 	}
 	for _, w := range live {
-		if w.ID == s.ManagerID {
+		if managers[w.ID] {
 			continue
 		}
 		found := false
 		for i := range db.Records {
 			r := &db.Records[i]
 			if r.HostID == w.ID && r.Status != "archived" {
+				if r.Status == "missing" || r.Status == "closed" {
+					r.Status = "active"
+				}
 				if r.Status != "restoring" {
 					r.Label = w.Label
 				}
@@ -77,6 +106,9 @@ func (s *Service) Refresh(ctx context.Context) ([]state.Record, error) {
 	}
 	for i := range db.Records {
 		r := &db.Records[i]
+		if managers[r.HostID] {
+			continue
+		}
 		exists := false
 		for _, w := range live {
 			if w.ID == r.HostID {
@@ -88,15 +120,41 @@ func (s *Service) Refresh(ctx context.Context) ([]state.Record, error) {
 			if r.Status == "archiving" {
 				r.Status = "archived"
 				r.HostID = ""
-			} else if r.Status == "active" {
-				r.Status = "missing"
+			} else if r.Status == "active" || r.Status == "missing" {
+				r.Status = "closed"
 			}
 		}
 	}
 	if e = s.Store.WriteDatabase(db); e != nil {
 		return nil, e
 	}
-	return db.Records, nil
+	rows := []state.Record{}
+	for _, r := range db.Records {
+		if !managers[r.HostID] && r.Status != "closed" {
+			rows = append(rows, r)
+		}
+	}
+	return rows, nil
+}
+
+// StoredRows reads the atomically replaced database without querying Herdr.
+// Open TUIs use this to observe updates made by event hook processes.
+func (s *Service) StoredRows() ([]state.Record, error) {
+	db, err := s.Store.ReadDatabase()
+	if err != nil {
+		return nil, err
+	}
+	managers, err := s.managerIDs()
+	if err != nil {
+		return nil, err
+	}
+	rows := []state.Record{}
+	for _, r := range db.Records {
+		if !managers[r.HostID] && r.Status != "closed" {
+			rows = append(rows, r)
+		}
+	}
+	return rows, nil
 }
 
 var ErrPreviewChanged = errors.New("workspace 已變更，請重新預覽並確認封存")
@@ -109,7 +167,7 @@ func (s *Service) archive(ctx context.Context, id string, preview *ArchivePrevie
 	if s.MutationError != nil {
 		return s.MutationError
 	}
-	unlock, e := s.Store.Lock("session")
+	unlock, e := s.Store.WaitLock(ctx, "session")
 	if e != nil {
 		return e
 	}
@@ -126,7 +184,11 @@ func (s *Service) archive(ctx context.Context, id string, preview *ArchivePrevie
 		if preview != nil && preview.HostID != r.HostID {
 			return ErrPreviewChanged
 		}
-		if r.HostID == s.ManagerID {
+		managers, err := s.managerIDs()
+		if err != nil {
+			return err
+		}
+		if managers[r.HostID] {
 			return fmt.Errorf("cannot archive the manager workspace")
 		}
 		if r.Status != "active" && r.Status != "archiving" {

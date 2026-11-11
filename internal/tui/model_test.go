@@ -100,3 +100,26 @@ func TestAsyncBlinkForwarding(t *testing.T) {
 		})
 	}
 }
+
+func TestEventUpdatesPreserveSelectionAndEditor(t *testing.T) {
+	m := New(nil, nil)
+	m.records = []state.Record{{ID: "a", Status: "active"}, {ID: "b", Status: "active"}}
+	m.cursor = 1
+	next, cmd := m.Update(storedRows{records: []state.Record{{ID: "b", Label: "renamed", Status: "active"}}})
+	m = next.(Model)
+	if cmd == nil || m.cursor != 0 || len(m.records) != 1 || m.records[0].Label != "renamed" {
+		t.Fatal(m.records, m.cursor)
+	}
+	m.mode = "edit"
+	m.editor.SetValue("unsaved note")
+	next, cmd = m.Update(storedRows{})
+	m = next.(Model)
+	if cmd == nil || m.mode != "edit" || m.editor.Value() != "unsaved note" || len(m.records) != 1 {
+		t.Fatal("background refresh interrupted editing")
+	}
+	m.mode = "archive"
+	next, _ = m.Update(storedRows{})
+	if next.(Model).mode != "archive" || len(next.(Model).records) != 1 {
+		t.Fatal("confirmation changed")
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"herdr-workspace-enhancer/internal/state"
 	"herdr-workspace-enhancer/internal/workspace"
 	"strings"
+	"time"
 )
 
 type refreshed struct {
@@ -23,6 +24,16 @@ type previewed struct {
 	err     error
 }
 type finished struct{ err error }
+type pollState struct{}
+type storedRows struct {
+	records []state.Record
+	err     error
+}
+
+func pollLater() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return pollState{} })
+}
+
 type Model struct {
 	Service       *workspace.Service
 	Focus         func(context.Context, string) error
@@ -60,7 +71,7 @@ func New(s *workspace.Service, focus func(context.Context, string) error) Model 
 func (m Model) refresh() tea.Cmd {
 	return func() tea.Msg { records, e := m.Service.Refresh(context.Background()); return refreshed{records, e} }
 }
-func (m Model) Init() tea.Cmd { return m.refresh() }
+func (m Model) Init() tea.Cmd { return tea.Batch(m.refresh(), pollLater()) }
 func (m Model) visible() []state.Record {
 	var rows []state.Record
 	for _, r := range m.records {
@@ -96,6 +107,34 @@ func (m *Model) save() bool {
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
+	case pollState:
+		if m.busy || m.mode != "" {
+			return m, pollLater()
+		}
+		return m, func() tea.Msg {
+			rows, err := m.Service.StoredRows()
+			return storedRows{rows, err}
+		}
+	case storedRows:
+		// Do not replace a note editor or archive confirmation while it is open.
+		if !m.busy && m.mode == "" {
+			if v.err != nil {
+				m.status = v.err.Error()
+			} else {
+				selected, hadSelection := m.selected()
+				m.records = v.records
+				m.cursor = min(m.cursor, max(0, len(m.visible())-1))
+				if hadSelection {
+					for i, row := range m.visible() {
+						if row.ID == selected.ID {
+							m.cursor = i
+							break
+						}
+					}
+				}
+			}
+		}
+		return m, pollLater()
 	case tea.WindowSizeMsg:
 		m.width = v.Width
 		m.height = v.Height

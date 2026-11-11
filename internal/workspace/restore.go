@@ -48,7 +48,7 @@ func (s *Service) Restore(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("host does not support restoration")
 	}
-	unlock, e := s.Store.Lock("session")
+	unlock, e := s.Store.WaitLock(ctx, "session")
 	if e != nil {
 		return e
 	}

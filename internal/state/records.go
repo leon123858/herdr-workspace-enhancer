@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"herdr-workspace-enhancer/internal/herdr"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type Record struct {
@@ -47,6 +49,22 @@ func (s *Store) Lock(name string) (func(), error) {
 	}
 	if !ok {
 		return nil, fmt.Errorf("another operation is in progress")
+	}
+	return func() { _ = l.Close() }, nil
+}
+
+// WaitLock lets event handlers wait for archive/restore and manager creation
+// instead of dropping notifications when another process owns the session.
+func (s *Store) WaitLock(ctx context.Context, name string) (func(), error) {
+	l := flock.New(filepath.Join(s.Dir, name+".lock"))
+	ok, err := l.TryLockContext(ctx, 25*time.Millisecond)
+	if err != nil {
+		_ = l.Close()
+		return nil, err
+	}
+	if !ok {
+		_ = l.Close()
+		return nil, ctx.Err()
 	}
 	return func() { _ = l.Close() }, nil
 }

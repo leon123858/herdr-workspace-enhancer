@@ -176,3 +176,123 @@ func TestArchiveConfirmedRejectsChanges(t *testing.T) {
 		})
 	}
 }
+
+func TestAllManagersExcludedIncludingOldRecords(t *testing.T) {
+	store, err := state.Open(t.TempDir(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Save("manager-workspace-id", 0, "legacy"); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.RegisterManager("new"); err != nil {
+		t.Fatal(err)
+	}
+	records := []state.Record{{ID: "old-record", HostID: "legacy", Status: "active"}, {ID: "new-record", HostID: "new", Status: "active"}}
+	if err = store.WriteDatabase(state.Database{Version: 1, Records: records}); err != nil {
+		t.Fatal(err)
+	}
+	host := &fakeHost{store: store, live: []herdr.Workspace{{ID: "legacy"}, {ID: "new"}, {ID: "current"}, {ID: "project"}}}
+	s := Service{Store: store, Host: host, ManagerID: "current"}
+	if _, err = store.Save("old-record", 0, "keep legacy note"); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range records {
+		if err = s.Archive(context.Background(), r.ID); err == nil {
+			t.Fatal("manager archive allowed")
+		}
+		if _, err = s.Preview(context.Background(), r.ID); err == nil {
+			t.Fatal("manager preview allowed")
+		}
+	}
+	if host.closed {
+		t.Fatal("manager closed")
+	}
+	// Older records are removed even if the manager has already closed.
+	dbBefore, err := store.ReadDatabase()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbBefore.Records[0].Status = "archiving"
+	if err = store.WriteDatabase(dbBefore); err != nil {
+		t.Fatal(err)
+	}
+	host.live = []herdr.Workspace{{ID: "project"}}
+	rows, err := s.Refresh(context.Background())
+	if err != nil || len(rows) != 1 || rows[0].HostID != "project" {
+		t.Fatal(rows, err)
+	}
+	db, err := store.ReadDatabase()
+	if err != nil || len(db.Records) != 1 || db.Records[0].HostID != "project" {
+		t.Fatal("manager records retained", db, err)
+	}
+	note, err := store.Load("old-record")
+	if err != nil || note.Text != "keep legacy note" {
+		t.Fatal(note, err)
+	}
+}
+
+func TestWorkspaceLifecycleReconciliation(t *testing.T) {
+	store, err := state.Open(t.TempDir(), "events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &fakeHost{store: store, live: []herdr.Workspace{{ID: "w1", Label: "Project"}}}
+	service := Service{Store: store, Host: host}
+	ctx := context.Background()
+	rows, err := service.Refresh(ctx)
+	if err != nil || len(rows) != 1 {
+		t.Fatal(rows, err)
+	}
+	id := rows[0].ID
+	if _, err = store.Save(id, 0, "notes survive close"); err != nil {
+		t.Fatal(err)
+	}
+	host.live[0].Label = "Renamed"
+	rows, err = service.Refresh(ctx)
+	if err != nil || rows[0].Label != "Renamed" {
+		t.Fatal(rows, err)
+	}
+	host.live = nil
+	for i := 0; i < 2; i++ {
+		rows, err = service.Refresh(ctx)
+		if err != nil || len(rows) != 0 {
+			t.Fatal("closed workspace visible", rows, err)
+		}
+	}
+	db, err := store.ReadDatabase()
+	if err != nil || len(db.Records) != 1 || db.Records[0].Status != "closed" {
+		t.Fatal(db, err)
+	}
+	note, err := store.Load(id)
+	if err != nil || note.Text != "notes survive close" {
+		t.Fatal(note, err)
+	}
+	// Delayed/duplicate events reconcile current host state, not their old payload.
+	host.live = []herdr.Workspace{{ID: "w1", Label: "Back"}}
+	rows, err = service.Refresh(ctx)
+	if err != nil || len(rows) != 1 || rows[0].Status != "active" || rows[0].ID != id {
+		t.Fatal(rows, err)
+	}
+	db, _ = store.ReadDatabase()
+	db.Records[0].Status = "missing"
+	if err = store.WriteDatabase(db); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = service.Refresh(ctx)
+	if err != nil || rows[0].Status != "active" {
+		t.Fatal(rows, err)
+	}
+	// Closing during archive reconciliation preserves the restorable snapshot.
+	db, _ = store.ReadDatabase()
+	db.Records[0].Status = "archiving"
+	db.Records[0].Snapshot = &herdr.Snapshot{Label: "Back"}
+	if err = store.WriteDatabase(db); err != nil {
+		t.Fatal(err)
+	}
+	host.live = nil
+	rows, err = service.Refresh(ctx)
+	if err != nil || len(rows) != 1 || rows[0].Status != "archived" || rows[0].Snapshot == nil {
+		t.Fatal(rows, err)
+	}
+}

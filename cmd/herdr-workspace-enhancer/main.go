@@ -9,6 +9,7 @@ import (
 	"herdr-workspace-enhancer/internal/tui"
 	"herdr-workspace-enhancer/internal/workspace"
 	"os"
+	"time"
 )
 
 func run() error {
@@ -29,16 +30,23 @@ func run() error {
 		if os.Args[1] == "--open" {
 			return openManager(context.Background(), client, store)
 		}
+		if os.Args[1] == "--sync" {
+			// Event context identifies the affected user workspace, not a manager.
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			_, err := (&workspace.Service{Store: store, Host: client}).Refresh(ctx)
+			return err
+		}
 		return fmt.Errorf("unknown argument %q", os.Args[1])
 	}
 	if manager == "" {
 		return fmt.Errorf("manager workspace context is missing")
 	}
-	known, err := store.Load("manager-workspace-id")
+	known, err := store.ManagerIDs()
 	if err != nil {
 		return err
 	}
-	if known.Text != manager {
+	if !known[manager] {
 		return fmt.Errorf("open the manager using the plugin action; this is not its dedicated workspace")
 	}
 

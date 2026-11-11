@@ -1,0 +1,8 @@
+# Append to your Herdr config.toml. With the default prefix, press Ctrl+B,
+# release it, then press w to open a new manager workspace.
+# Replaces Herdr's default prefix+w workspace picker shortcut.
+[[keys.command]]
+key = "prefix+w"
+type = "plugin_action"
+command = "workspace.enhancer.open"
+description = "Open Workspace Enhancer"

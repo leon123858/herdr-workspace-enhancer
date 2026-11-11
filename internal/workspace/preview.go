@@ -19,7 +19,11 @@ func (s *Service) Preview(ctx context.Context, id string) (ArchivePreview, error
 	}
 	for _, r := range db.Records {
 		if r.ID == id {
-			if r.HostID == s.ManagerID {
+			managers, err := s.managerIDs()
+			if err != nil {
+				return ArchivePreview{}, err
+			}
+			if managers[r.HostID] {
 				return ArchivePreview{}, fmt.Errorf("cannot archive manager")
 			}
 			snapshot, err := s.Host.Snapshot(ctx, herdr.Workspace{ID: r.HostID, Label: r.Label})

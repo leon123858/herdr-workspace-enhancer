@@ -6,50 +6,57 @@ import (
 	"herdr-workspace-enhancer/internal/herdr"
 	"herdr-workspace-enhancer/internal/state"
 	"path/filepath"
-	"runtime"
 )
 
-// openManager creates a dedicated host workspace once per session. The stored
-// identifier, never a user-controlled label, is used to recognize it later.
+// Each invocation owns a fresh workspace and replaces only its initial shell.
 func openManager(ctx context.Context, client *herdr.Client, store *state.Store) error {
-	unlock, e := store.Lock("manager")
-	if e != nil {
-		return e
+	var created struct {
+		Workspace herdr.Workspace `json:"workspace"`
+		Tab       herdr.Tab       `json:"tab"`
+		Root      herdr.Pane      `json:"root_pane"`
 	}
-	defer unlock()
-	note, e := store.Load("manager-workspace-id")
-	if e != nil {
-		return e
-	}
-	live, e := client.Workspaces(ctx)
-	if e != nil {
-		return e
-	}
-	id := ""
-	for _, w := range live {
-		if w.ID == note.Text {
-			id = w.ID
-			break
+	// Hold the same lock as event reconciliation until registration is durable.
+	// The create event can arrive before the create command returns.
+	err := func() error {
+		unlock, err := store.WaitLock(ctx, "session")
+		if err != nil {
+			return err
 		}
-	}
-	if id == "" {
-		var result struct {
-			Workspace herdr.Workspace `json:"workspace"`
+		defer unlock()
+		if err := client.Call(ctx, &created, "workspace", "create", "--cwd", filepath.Clean(store.Dir), "--label", "Workspace Enhancer", "--no-focus"); err != nil {
+			return fmt.Errorf("create manager workspace: %w", err)
 		}
-		if e = client.Call(ctx, &result, "workspace", "create", "--cwd", filepath.Clean(store.Dir), "--label", "Workspace Enhancer", "--no-focus"); e != nil {
-			return e
-		}
-		id = result.Workspace.ID
-		if id == "" {
+		if created.Workspace.ID == "" {
 			return fmt.Errorf("manager creation returned no workspace ID")
 		}
-		if _, e = store.Save("manager-workspace-id", note.Revision, id); e != nil {
-			return e
+		if err := store.RegisterManager(created.Workspace.ID); err != nil {
+			return fmt.Errorf("register manager workspace %s: %w", created.Workspace.ID, err)
 		}
+		return nil
+	}()
+	if err != nil {
+		return err
 	}
-	entry := "manager"
-	if runtime.GOOS == "windows" {
-		entry = "manager-windows"
+	id := created.Workspace.ID
+	if created.Tab.ID == "" || created.Root.ID == "" {
+		return fmt.Errorf("manager creation returned incomplete initial tab or pane IDs")
 	}
-	return client.Call(ctx, nil, "plugin", "pane", "open", "--plugin", "workspace.enhancer", "--entrypoint", entry, "--workspace", id, "--placement", "tab", "--focus")
+	var opened struct {
+		PluginPane struct {
+			Pane herdr.Pane `json:"pane"`
+		} `json:"plugin_pane"`
+	}
+	if err := client.Call(ctx, &opened, "plugin", "pane", "open", "--plugin", "workspace.enhancer", "--entrypoint", "manager", "--placement", "split", "--target-pane", created.Root.ID, "--focus"); err != nil {
+		return fmt.Errorf("start manager in workspace %s: %w", id, err)
+	}
+	if opened.PluginPane.Pane.ID == "" || opened.PluginPane.Pane.ID == created.Root.ID {
+		return fmt.Errorf("manager startup returned no distinct pane ID; initial shell retained")
+	}
+	if err := client.Call(ctx, nil, "pane", "close", created.Root.ID); err != nil {
+		return fmt.Errorf("manager started but initial shell cleanup failed: %w", err)
+	}
+	if err := client.Focus(ctx, id); err != nil {
+		return fmt.Errorf("focus manager pane: %w", err)
+	}
+	return nil
 }
