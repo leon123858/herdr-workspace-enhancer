@@ -1,9 +1,9 @@
-package workspace
+package service
 
 import (
 	"context"
 	"fmt"
-	"herdr-workspace-enhancer/internal/herdr"
+	"herdr-workspace-enhancer/repository/herdr"
 )
 
 type ArchivePreview struct {

@@ -1,13 +1,13 @@
-package workspace
+package service
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"herdr-workspace-enhancer/internal/herdr"
-	"herdr-workspace-enhancer/internal/layout"
-	"herdr-workspace-enhancer/internal/state"
+	state "herdr-workspace-enhancer/model"
+	"herdr-workspace-enhancer/model/layout"
+	"herdr-workspace-enhancer/repository/herdr"
 	"reflect"
 	"strconv"
 )

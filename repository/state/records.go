@@ -8,31 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gofrs/flock"
-	"herdr-workspace-enhancer/internal/herdr"
+	"herdr-workspace-enhancer/model"
 	"os"
 	"path/filepath"
 	"time"
 )
 
-type Record struct {
-	ID       string          `json:"id"`
-	HostID   string          `json:"host_id"`
-	Label    string          `json:"label"`
-	Status   string          `json:"status"`
-	Snapshot *herdr.Snapshot `json:"snapshot,omitempty"`
-	Journal  []Step          `json:"journal,omitempty"`
-}
-type Step struct {
-	Before json.RawMessage `json:"before,omitempty"`
-	Kind   string          `json:"kind"`
-	Args   []string        `json:"args"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Status string          `json:"status"`
-}
-type Database struct {
-	Version int      `json:"version"`
-	Records []Record `json:"records"`
-}
+type Record = model.Record
+type Step = model.Step
+type Database = model.Database
 
 func NewID() (string, error) {
 	var b [16]byte

@@ -1,12 +1,11 @@
-package main
+package service
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"herdr-workspace-enhancer/internal/herdr"
-	"herdr-workspace-enhancer/internal/state"
-	"herdr-workspace-enhancer/internal/workspace"
+	"herdr-workspace-enhancer/repository/herdr"
+	"herdr-workspace-enhancer/repository/state"
 	"reflect"
 	"strings"
 	"testing"
@@ -61,7 +60,7 @@ func TestOpenManager(t *testing.T) {
 				return json.Marshal(map[string]any{"result": result})
 			}}
 			for i := 0; i < 2; i++ {
-				err = openManager(context.Background(), client, store)
+				err = OpenManager(context.Background(), client, store)
 				if (err != nil) != (failure != "") {
 					t.Fatal(err)
 				}
@@ -91,7 +90,7 @@ func TestCreateEventWaitsForManagerRegistration(t *testing.T) {
 		case "workspace create":
 			// This notification occurs before openManager sees the created ID.
 			go func() {
-				_, e := (&workspace.Service{Store: store, Host: client}).Refresh(ctx)
+				_, e := (&Service{Store: store, Host: client}).Refresh(ctx)
 				done <- e
 			}()
 			if unlock, e := store.Lock("session"); e == nil {
@@ -106,7 +105,7 @@ func TestCreateEventWaitsForManagerRegistration(t *testing.T) {
 		}
 		return json.Marshal(map[string]any{"result": result})
 	}}
-	if err = openManager(ctx, client, store); err != nil {
+	if err = OpenManager(ctx, client, store); err != nil {
 		t.Fatal(err)
 	}
 	select {

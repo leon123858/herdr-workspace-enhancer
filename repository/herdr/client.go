@@ -6,7 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"herdr-workspace-enhancer/internal/layout"
+	"herdr-workspace-enhancer/model"
+	"herdr-workspace-enhancer/model/layout"
 	"os/exec"
 	"time"
 )
@@ -77,34 +78,11 @@ func (c *Client) Call(ctx context.Context, dst any, args ...string) error {
 	return json.Unmarshal(envelope.Result, dst)
 }
 
-type Workspace struct {
-	ID     string `json:"workspace_id"`
-	Label  string `json:"label"`
-	Number int    `json:"number"`
-}
-type Tab struct {
-	ID     string `json:"tab_id"`
-	Label  string `json:"label"`
-	Number int    `json:"number"`
-}
-type Pane struct {
-	WorkspaceID   string `json:"workspace_id"`
-	TerminalID    string `json:"terminal_id"`
-	ID            string `json:"pane_id"`
-	TabID         string `json:"tab_id"`
-	CWD           string `json:"cwd"`
-	ForegroundCWD string `json:"foreground_cwd"`
-	Label         string `json:"label"`
-}
-type SavedTab struct {
-	SourceTabID string       `json:"source_tab_id,omitempty"`
-	Label       string       `json:"label"`
-	Root        *layout.Node `json:"root"`
-}
-type Snapshot struct {
-	Label string     `json:"label"`
-	Tabs  []SavedTab `json:"tabs"`
-}
+type Workspace = model.Workspace
+type Tab = model.Tab
+type Pane = model.Pane
+type SavedTab = model.SavedTab
+type Snapshot = model.Snapshot
 
 func (c *Client) Workspaces(ctx context.Context) ([]Workspace, error) {
 	var r struct {

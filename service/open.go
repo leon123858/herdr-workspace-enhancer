@@ -1,15 +1,15 @@
-package main
+package service
 
 import (
 	"context"
 	"fmt"
-	"herdr-workspace-enhancer/internal/herdr"
-	"herdr-workspace-enhancer/internal/state"
+	"herdr-workspace-enhancer/repository/herdr"
+
 	"path/filepath"
 )
 
 // Each invocation owns a fresh workspace and replaces only its initial shell.
-func openManager(ctx context.Context, client *herdr.Client, store *state.Store) error {
+func OpenManager(ctx context.Context, client *herdr.Client, store ManagerStore) error {
 	var created struct {
 		Workspace herdr.Workspace `json:"workspace"`
 		Tab       herdr.Tab       `json:"tab"`
@@ -23,7 +23,7 @@ func openManager(ctx context.Context, client *herdr.Client, store *state.Store) 
 			return err
 		}
 		defer unlock()
-		if err := client.Call(ctx, &created, "workspace", "create", "--cwd", filepath.Clean(store.Dir), "--label", "Workspace Enhancer", "--no-focus"); err != nil {
+		if err := client.Call(ctx, &created, "workspace", "create", "--cwd", filepath.Clean(store.Directory()), "--label", "Workspace Enhancer", "--no-focus"); err != nil {
 			return fmt.Errorf("create manager workspace: %w", err)
 		}
 		if created.Workspace.ID == "" {
@@ -59,4 +59,10 @@ func openManager(ctx context.Context, client *herdr.Client, store *state.Store) 
 		return fmt.Errorf("focus manager pane: %w", err)
 	}
 	return nil
+}
+
+type ManagerStore interface {
+	WaitLock(context.Context, string) (func(), error)
+	RegisterManager(string) error
+	Directory() string
 }

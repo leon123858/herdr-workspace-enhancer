@@ -7,10 +7,10 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"herdr-workspace-enhancer/internal/layout"
-	textarea "herdr-workspace-enhancer/internal/noteeditor"
-	"herdr-workspace-enhancer/internal/state"
-	"herdr-workspace-enhancer/internal/workspace"
+	state "herdr-workspace-enhancer/model"
+	"herdr-workspace-enhancer/model/layout"
+	workspace "herdr-workspace-enhancer/service"
+	textarea "herdr-workspace-enhancer/tui/noteeditor"
 	"strings"
 	"time"
 )
@@ -96,7 +96,7 @@ func (m Model) selected() (state.Record, bool) {
 	return rows[min(m.cursor, len(rows)-1)], true
 }
 func (m *Model) save() bool {
-	n, e := m.Service.Store.Save(m.editingID, m.note.Revision, m.editor.Value())
+	n, e := m.Service.Save(m.editingID, m.note.Revision, m.editor.Value())
 	if e != nil {
 		m.status = e.Error()
 		return false
@@ -245,7 +245,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refresh()
 		case "e":
 			if r, ok := m.selected(); ok {
-				n, e := m.Service.Store.Load(r.ID)
+				n, e := m.Service.Load(r.ID)
 				if e != nil {
 					m.status = e.Error()
 					return m, nil

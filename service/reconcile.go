@@ -1,11 +1,11 @@
-package workspace
+package service
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"herdr-workspace-enhancer/internal/herdr"
-	"herdr-workspace-enhancer/internal/state"
+	state "herdr-workspace-enhancer/model"
+	"herdr-workspace-enhancer/repository/herdr"
 )
 
 func argument(args []string, key string) string {

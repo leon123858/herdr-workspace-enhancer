@@ -1,61 +1,30 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	tea "github.com/charmbracelet/bubbletea"
-	"herdr-workspace-enhancer/internal/herdr"
-	"herdr-workspace-enhancer/internal/state"
-	"herdr-workspace-enhancer/internal/tui"
-	"herdr-workspace-enhancer/internal/workspace"
+	"github.com/samber/do/v2"
+	"github.com/spf13/cobra"
+	"herdr-workspace-enhancer/bootstrap"
 	"os"
-	"time"
 )
 
-func run() error {
-	if len(os.Args) > 1 && (os.Args[1] == "--help" || os.Args[1] == "-h") {
-		fmt.Println("Herdr Workspace Enhancer\nRun from a dedicated Herdr manager workspace.\nRequired environment: HERDR_BIN_PATH, HERDR_SOCKET_PATH, HERDR_PLUGIN_STATE_DIR, HERDR_WORKSPACE_ID")
-		return nil
+func newCommand() *cobra.Command {
+	root := &cobra.Command{Use: "herdr-workspace-enhancer", Short: "Workspace notes and archive manager", SilenceUsage: true, SilenceErrors: true, RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() }, Args: cobra.NoArgs}
+	for _, name := range []string{"open", "sync", "tui"} {
+		name := name
+		root.AddCommand(&cobra.Command{Use: name, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+			i := bootstrap.New()
+			controller, e := do.Invoke[*bootstrap.Controller](i)
+			if e != nil {
+				return e
+			}
+			return controller.Run(cmd.Context(), name)
+		}})
 	}
-	binary, socket, root, manager := os.Getenv("HERDR_BIN_PATH"), os.Getenv("HERDR_SOCKET_PATH"), os.Getenv("HERDR_PLUGIN_STATE_DIR"), os.Getenv("HERDR_WORKSPACE_ID")
-	if binary == "" || socket == "" || root == "" {
-		return fmt.Errorf("launch through Herdr plugin context; required environment is missing (see --help)")
-	}
-	store, e := state.Open(root, socket)
-	if e != nil {
-		return e
-	}
-	client := herdr.New(binary)
-	if len(os.Args) > 1 {
-		if os.Args[1] == "--open" {
-			return openManager(context.Background(), client, store)
-		}
-		if os.Args[1] == "--sync" {
-			// Event context identifies the affected user workspace, not a manager.
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			_, err := (&workspace.Service{Store: store, Host: client}).Refresh(ctx)
-			return err
-		}
-		return fmt.Errorf("unknown argument %q", os.Args[1])
-	}
-	if manager == "" {
-		return fmt.Errorf("manager workspace context is missing")
-	}
-	known, err := store.ManagerIDs()
-	if err != nil {
-		return err
-	}
-	if !known[manager] {
-		return fmt.Errorf("open the manager using the plugin action; this is not its dedicated workspace")
-	}
-
-	service := &workspace.Service{Store: store, Host: client, ManagerID: manager, MutationError: client.CheckCapabilities(context.Background())}
-	_, e = tea.NewProgram(tui.New(service, client.Focus), tea.WithAltScreen()).Run()
-	return e
+	return root
 }
 func main() {
-	if e := run(); e != nil {
+	if e := newCommand().Execute(); e != nil {
 		fmt.Fprintln(os.Stderr, e)
 		os.Exit(1)
 	}

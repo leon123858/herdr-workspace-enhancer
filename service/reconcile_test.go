@@ -1,10 +1,10 @@
-package workspace
+package service
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"herdr-workspace-enhancer/internal/state"
+	"herdr-workspace-enhancer/repository/state"
 	"testing"
 )
 

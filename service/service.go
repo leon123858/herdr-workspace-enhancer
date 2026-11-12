@@ -1,12 +1,14 @@
 // Package workspace coordinates durable state with Herdr operations.
-package workspace
+package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"herdr-workspace-enhancer/internal/herdr"
-	"herdr-workspace-enhancer/internal/state"
+	state "herdr-workspace-enhancer/model"
+	"herdr-workspace-enhancer/repository/herdr"
 	"reflect"
 )
 
@@ -16,7 +18,7 @@ type Host interface {
 	Close(context.Context, string) error
 }
 type Service struct {
-	Store         *state.Store
+	Store         Store
 	Host          Host
 	MutationError error
 	ManagerID     string
@@ -97,7 +99,7 @@ func (s *Service) Refresh(ctx context.Context) ([]state.Record, error) {
 			}
 		}
 		if !found {
-			id, e := state.NewID()
+			id, e := newID()
 			if e != nil {
 				return nil, e
 			}
@@ -244,4 +246,24 @@ func (s *Service) archive(ctx context.Context, id string, preview *ArchivePrevie
 		return s.Store.WriteDatabase(db)
 	}
 	return fmt.Errorf("workspace record not found")
+}
+
+type Store interface {
+	WaitLock(context.Context, string) (func(), error)
+	ReadDatabase() (state.Database, error)
+	WriteDatabase(state.Database) error
+	ManagerIDs() (map[string]bool, error)
+	Load(string) (state.Note, error)
+	Save(string, uint64, string) (state.Note, error)
+}
+
+func (s *Service) Load(id string) (state.Note, error) { return s.Store.Load(id) }
+func (s *Service) Save(id string, revision uint64, text string) (state.Note, error) {
+	return s.Store.Save(id, revision, text)
+}
+
+func newID() (string, error) {
+	var b [16]byte
+	_, e := rand.Read(b[:])
+	return hex.EncodeToString(b[:]), e
 }

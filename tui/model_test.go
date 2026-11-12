@@ -4,8 +4,8 @@ import (
 	"context"
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
-	"herdr-workspace-enhancer/internal/state"
-	"herdr-workspace-enhancer/internal/workspace"
+	"herdr-workspace-enhancer/repository/state"
+	workspace "herdr-workspace-enhancer/service"
 	"strings"
 	"testing"
 )

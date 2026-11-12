@@ -12,22 +12,22 @@ command = ["go", "build", "-o", "bin/", "./cmd/herdr-workspace-enhancer"]
 id = "open"
 title = "Workspace notes and archives"
 contexts = ["workspace"]
-command = ["./bin/herdr-workspace-enhancer", "--open"]
+command = ["./bin/herdr-workspace-enhancer", "open"]
 
 [[panes]]
 id = "manager"
 title = "Workspace Enhancer"
 placement = "tab"
-command = ["./bin/herdr-workspace-enhancer"]
+command = ["./bin/herdr-workspace-enhancer", "tui"]
 
 [[events]]
 on = "workspace.created"
-command = ["./bin/herdr-workspace-enhancer", "--sync"]
+command = ["./bin/herdr-workspace-enhancer", "sync"]
 
 [[events]]
 on = "workspace.closed"
-command = ["./bin/herdr-workspace-enhancer", "--sync"]
+command = ["./bin/herdr-workspace-enhancer", "sync"]
 
 [[events]]
 on = "workspace.renamed"
-command = ["./bin/herdr-workspace-enhancer", "--sync"]
+command = ["./bin/herdr-workspace-enhancer", "sync"]

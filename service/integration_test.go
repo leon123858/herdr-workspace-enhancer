@@ -1,10 +1,10 @@
-package workspace
+package service
 
 import (
 	"context"
 	"fmt"
-	"herdr-workspace-enhancer/internal/herdr"
-	"herdr-workspace-enhancer/internal/state"
+	"herdr-workspace-enhancer/repository/herdr"
+	"herdr-workspace-enhancer/repository/state"
 	"os"
 	"testing"
 )

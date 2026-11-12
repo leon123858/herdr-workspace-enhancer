@@ -6,16 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"herdr-workspace-enhancer/model"
 	"os"
 	"path/filepath"
 )
 
-var ErrConflict = errors.New("note changed in another editor; reload before saving")
+var ErrConflict = model.ErrConflict
 
-type Note struct {
-	Revision uint64 `json:"revision"`
-	Text     string `json:"text"`
-}
+type Note = model.Note
 
 type Store struct{ Dir string }
 
@@ -77,3 +75,5 @@ func (s *Store) Save(id string, expected uint64, text string) (Note, error) {
 	}
 	return n, nil
 }
+
+func (s *Store) Directory() string { return s.Dir }
