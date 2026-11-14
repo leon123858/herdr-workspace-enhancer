@@ -2,18 +2,14 @@
 package controller
 
 import (
-	"context"
 	"fmt"
 	"herdr-workspace-enhancer/repository/config"
 	"herdr-workspace-enhancer/repository/herdr"
 	"herdr-workspace-enhancer/repository/state"
 	"herdr-workspace-enhancer/service"
-	"herdr-workspace-enhancer/tui"
 	"os"
 	"path/filepath"
-	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/samber/do/v2"
 )
 
@@ -52,57 +48,6 @@ func (c *Controller) init() {
 		}
 		return &service.Service{Store: s, Host: c}, nil
 	})
-}
-
-func (controller *Controller) Run(ctx context.Context, name string) error {
-	switch name {
-	case "open", "sync", "tui":
-	default:
-		return fmt.Errorf("unknown command %q", name)
-	}
-	i := controller.injector
-
-	s, e := do.Invoke[*service.Service](i)
-	if e != nil {
-		return e
-	}
-	c, e := do.Invoke[*herdr.Client](i)
-	if e != nil {
-		return e
-	}
-	switch name {
-	case "open":
-		store, e := do.Invoke[*state.Store](i)
-		if e != nil {
-			return e
-		}
-		return service.OpenManager(ctx, c, store)
-	case "sync":
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		_, e = s.Refresh(ctx)
-		return e
-	case "tui":
-		manager := os.Getenv("HERDR_WORKSPACE_ID")
-		isManager, e := s.Store.IsManager(manager)
-		if e != nil {
-			return e
-		}
-		if manager == "" || !isManager {
-			return fmt.Errorf("open the manager using the plugin action; this is not its dedicated workspace")
-		}
-		s.ManagerID = manager
-		s.MutationError = c.CheckCapabilities(ctx)
-		m := tui.New(s, c.Focus)
-		m.Settings, e = do.Invoke[*service.SettingsService](i)
-		if e != nil {
-			return e
-		}
-		m.SetRatio()
-		_, e = tea.NewProgram(m, tea.WithMouseCellMotion(), tea.WithAltScreen(), tea.WithContext(ctx)).Run()
-		return e
-	}
-	return nil
 }
 
 // Shutdown releases resolved dependencies, including the session SQLite pool.

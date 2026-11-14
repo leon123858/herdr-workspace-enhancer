@@ -2,7 +2,6 @@ package controller
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,7 +90,5 @@ func TestCommandsReportMissingContext(t *testing.T) {
 			t.Fatal(name, err)
 		}
 	}
-	if err := New().Run(context.Background(), "invalid"); err == nil || !strings.Contains(err.Error(), "unknown command") {
-		t.Fatal(err)
-	}
+
 }
