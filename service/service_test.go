@@ -73,7 +73,7 @@ func serviceStore(t *testing.T) *state.Store {
 }
 func saveRecord(t *testing.T, s *state.Store, r model.Record) {
 	t.Helper()
-	if e := s.Transaction(context.Background(), func(tx model.WorkspaceTx) error { return tx.Put(r) }); e != nil {
+	if e := s.ApplySync(context.Background(), []model.Record{r}); e != nil {
 		t.Fatal(e)
 	}
 }

@@ -23,7 +23,7 @@ func TestSingleTableAutoMigrationAndReopen(t *testing.T) {
 		t.Fatal(n, e)
 	}
 }
-func TestConcurrentNotesAndMetadataTransactions(t *testing.T) {
+func TestConcurrentNotesAndMetadataUpdates(t *testing.T) {
 	root := t.TempDir()
 	a, b := testStore(t, root), testStore(t, root)
 	put(t, a, Record{ID: "one", HostID: "h1", Status: model.WorkspaceActive})
@@ -41,14 +41,13 @@ func TestConcurrentNotesAndMetadataTransactions(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 25; i++ {
-			if e := a.Transaction(context.Background(), func(tx model.WorkspaceTx) error {
-				r, e := tx.Get("one")
-				if e != nil {
-					return e
-				}
-				r.Label = "renamed"
-				return tx.Put(r)
-			}); e != nil {
+			r, e := a.Get("one")
+			if e != nil {
+				t.Error(e)
+				return
+			}
+			r.Label = "renamed"
+			if e := a.ApplySync(context.Background(), []Record{r}); e != nil {
 				t.Error(e)
 				return
 			}

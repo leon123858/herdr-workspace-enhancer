@@ -22,13 +22,6 @@ type Record struct {
 	Snapshot  *Snapshot       `json:"snapshot,omitempty"`
 }
 
-// WorkspaceTx is valid only inside Transaction. Put updates workspace metadata;
-// existing notes are only changed by Save, so sync cannot overwrite an editor.
-type WorkspaceTx interface {
-	All() ([]Record, error)
-	Get(string) (Record, error)
-	Put(Record) error
-}
 type WorkspaceStore interface {
 	All(context.Context) ([]Record, error)
 	ApplySync(context.Context, []Record) error

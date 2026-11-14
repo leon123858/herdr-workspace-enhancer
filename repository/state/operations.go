@@ -9,7 +9,7 @@ import (
 )
 
 func (s *Store) All(ctx context.Context) ([]Record, error) {
-	return (transaction{s.db.WithContext(ctx)}).All()
+	return allRecords(s.db.WithContext(ctx))
 }
 
 // ArchiveIntent is one conditional write; a stale preview cannot close a new host.
