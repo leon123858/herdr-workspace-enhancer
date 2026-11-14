@@ -2,14 +2,11 @@ package service
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	state "herdr-workspace-enhancer/model"
-	"herdr-workspace-enhancer/model/layout"
-	"herdr-workspace-enhancer/repository/herdr"
-	"reflect"
 	"strconv"
+
+	"herdr-workspace-enhancer/model"
+	"herdr-workspace-enhancer/model/layout"
 )
 
 type Caller interface {
@@ -31,16 +28,15 @@ type creation struct {
 }
 
 func first(n *layout.Node) *layout.Node {
-	for n.Type == "split" {
+	for n.Type == layout.NodeSplit {
 		n = n.First
 	}
 	return n
 }
 
-// Restore replays completed journal entries without repeating their mutations.
-// A pending entry is never blindly retried: the caller must reconcile its host
-// outcome first. Snapshots remain intact throughout restoration.
-func (s *Service) Restore(ctx context.Context, id string) error {
+// Restore performs one attempt. A partial result remains active and is never
+// replayed automatically. No SQL transaction spans a Herdr call.
+func (s *Service) Restore(ctx context.Context, id string) (result error) {
 	if s.MutationError != nil {
 		return s.MutationError
 	}
@@ -48,138 +44,93 @@ func (s *Service) Restore(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("host does not support restoration")
 	}
-	unlock, e := s.Store.WaitLock(ctx, "session")
-	if e != nil {
-		return e
+	unlock, err := s.Store.WaitLock(ctx, "session")
+	if err != nil {
+		return err
 	}
 	defer unlock()
-	db, e := s.Store.ReadDatabase()
-	if e != nil {
-		return e
+	r, err := s.Store.Get(id)
+	if err != nil {
+		return err
 	}
-	var r *state.Record
-	for i := range db.Records {
-		if db.Records[i].ID == id {
-			r = &db.Records[i]
-			break
-		}
+	if r.IsManager {
+		return fmt.Errorf("cannot restore manager workspace")
 	}
-	if r == nil {
-		return fmt.Errorf("workspace record not found")
-	}
-	if r.Status != "archived" && r.Status != "restoring" {
+	if r.Status != model.WorkspaceArchived {
 		return fmt.Errorf("workspace is %s", r.Status)
 	}
 	if r.Snapshot == nil || len(r.Snapshot.Tabs) == 0 {
 		return fmt.Errorf("snapshot is empty")
 	}
 	for _, tab := range r.Snapshot.Tabs {
-		if e = tab.Root.Validate(true); e != nil {
-			return e
+		if err = tab.Root.Validate(true); err != nil {
+			return err
 		}
 	}
-	if r.Status == "archived" {
-		r.Journal = nil
-		r.Status = "restoring"
-		if e = s.Store.WriteDatabase(db); e != nil {
-			return e
+	// Reconcile an earlier lost response before issuing a new create request.
+	live, err := s.Host.Workspaces(ctx)
+	if err != nil {
+		return err
+	}
+	if live == nil {
+		return fmt.Errorf("Herdr workspace scan is incomplete")
+	}
+	existing := ""
+	seen := map[string]bool{}
+	for _, w := range live {
+		if w.ID == "" || seen[w.ID] {
+			return fmt.Errorf("invalid Herdr workspace identity")
+		}
+		seen[w.ID] = true
+		if w.ID == r.HostID || w.Label == restorePrefix+r.ID {
+			if existing != "" {
+				return fmt.Errorf("multiple restore candidates; inspect Herdr before retrying")
+			}
+			existing = w.ID
 		}
 	}
-	index := 0
-	call := func(dst any, args ...string) error {
-		stepIndex := index
-		index++
-		if stepIndex < len(r.Journal) && r.Journal[stepIndex].Status == "rejected" {
-			if stepIndex != len(r.Journal)-1 {
-				return fmt.Errorf("invalid rejected journal position")
-			}
-			r.Journal = r.Journal[:stepIndex]
+	if existing != "" {
+		if _, err = s.refreshLocked(ctx); err != nil {
+			return err
 		}
-		if stepIndex < len(r.Journal) {
-			step := r.Journal[stepIndex]
-			if !reflect.DeepEqual(step.Args, args) {
-				return fmt.Errorf("restore journal does not match snapshot")
-			}
-			if step.Status != "done" {
-				raw, err := reconcileCreation(ctx, caller, step)
-				if err != nil {
-					return fmt.Errorf("step %d: %w", stepIndex+1, err)
-				}
-				step.Result = raw
-				step.Status = "done"
-				r.Journal[stepIndex] = step
-				if err = s.Store.WriteDatabase(db); err != nil {
-					return err
-				}
-			}
-			if dst != nil {
-				return json.Unmarshal(step.Result, dst)
-			}
-			return nil
-		}
-		var before json.RawMessage
-		if args[0] == "pane" && args[1] == "split" {
-			var err error
-			before, err = captureSplit(ctx, caller, args[2])
-			if err != nil {
-				return err
-			}
-		}
-		r.Journal = append(r.Journal, state.Step{Kind: args[0] + " " + args[1], Args: args, Status: "pending", Before: before})
-		if e := s.Store.WriteDatabase(db); e != nil {
-			return e
-		}
-		var raw json.RawMessage
-		if e := caller.Call(ctx, &raw, args...); e != nil {
-			var apiErr *herdr.APIError
-			if errors.As(e, &apiErr) && apiErr.Rejected() {
-				r.Journal[stepIndex].Status = "rejected"
-				if saveErr := s.Store.WriteDatabase(db); saveErr != nil {
-					return fmt.Errorf("%v; journal save: %w", e, saveErr)
-				}
-			}
-			return e
-		}
-		r.Journal[stepIndex].Result = raw
-		r.Journal[stepIndex].Status = "done"
-		if e := s.Store.WriteDatabase(db); e != nil {
-			return e
-		}
-		if dst != nil {
-			return json.Unmarshal(raw, dst)
-		}
-		return nil
+		return fmt.Errorf("workspace already exists; focus it instead of restoring again")
 	}
-	root := first(r.Snapshot.Tabs[0].Root)
+	defer func() {
+		if result != nil {
+			result = s.repairLocked(result)
+			if current, err := s.Store.Get(id); err == nil && current.Status == model.WorkspaceActive {
+				result = fmt.Errorf("workspace exists but restoration did not complete; inspect it before continuing: %w", result)
+			}
+		}
+	}()
 	var created creation
-	if e = call(&created, "workspace", "create", "--cwd", root.CWD, "--label", "enhancer-restore-"+r.ID, "--no-focus"); e != nil {
-		return e
+	err = caller.Call(ctx, &created, "workspace", "create", "--cwd", first(r.Snapshot.Tabs[0].Root).CWD, "--label", restorePrefix+r.ID, "--no-focus")
+	if err != nil {
+		return err
 	}
-	if created.Workspace.ID == "" || created.Tab.ID == "" || created.Root.ID == "" {
-		return fmt.Errorf("workspace creation returned incomplete IDs")
+	if created.Workspace.ID == "" {
+		return fmt.Errorf("workspace creation returned no workspace ID; sync to reconnect it")
 	}
-	r.HostID = created.Workspace.ID
-	if e = s.Store.WriteDatabase(db); e != nil {
-		return e
+	if created.Tab.ID == "" || created.Root.ID == "" {
+		return fmt.Errorf("workspace created with incomplete tab/pane IDs; inspect it before further changes")
 	}
 	var expand func(*layout.Node, string) error
 	expand = func(n *layout.Node, paneID string) error {
-		if n.Type == "pane" {
+		if n.Type == layout.NodePane {
 			if n.Label != "" {
-				return call(nil, "pane", "rename", paneID, n.Label)
+				return caller.Call(ctx, nil, "pane", "rename", paneID, n.Label)
 			}
 			return nil
 		}
-		right := first(n.Second)
 		var split creation
-		if e := call(&split, "pane", "split", paneID, "--direction", n.Direction, "--ratio", strconv.FormatFloat(n.Ratio, 'f', -1, 64), "--cwd", right.CWD, "--no-focus"); e != nil {
-			return e
+		if err := caller.Call(ctx, &split, "pane", "split", paneID, "--direction", n.Direction, "--ratio", strconv.FormatFloat(n.Ratio, 'f', -1, 64), "--cwd", first(n.Second).CWD, "--no-focus"); err != nil {
+			return err
 		}
 		if split.Pane.ID == "" {
 			return fmt.Errorf("split returned no pane ID")
 		}
-		if e := expand(n.First, paneID); e != nil {
-			return e
+		if err := expand(n.First, paneID); err != nil {
+			return err
 		}
 		return expand(n.Second, split.Pane.ID)
 	}
@@ -187,26 +138,20 @@ func (s *Service) Restore(ctx context.Context, id string) error {
 		tabID, paneID := created.Tab.ID, created.Root.ID
 		if i > 0 {
 			var next creation
-			if e = call(&next, "tab", "create", "--workspace", r.HostID, "--cwd", first(tab.Root).CWD, "--label", fmt.Sprintf("enhancer-restore-%s-tab-%d", r.ID, i), "--no-focus"); e != nil {
-				return e
+			if err = caller.Call(ctx, &next, "tab", "create", "--workspace", created.Workspace.ID, "--cwd", first(tab.Root).CWD, "--label", tab.Label, "--no-focus"); err != nil {
+				return err
 			}
 			tabID, paneID = next.Tab.ID, next.Root.ID
 			if tabID == "" || paneID == "" {
 				return fmt.Errorf("tab creation returned incomplete IDs")
 			}
 		}
-		{
-			if e = call(nil, "tab", "rename", tabID, tab.Label); e != nil {
-				return e
-			}
+		if err = caller.Call(ctx, nil, "tab", "rename", tabID, tab.Label); err != nil {
+			return err
 		}
-		if e = expand(tab.Root, paneID); e != nil {
-			return e
+		if err = expand(tab.Root, paneID); err != nil {
+			return err
 		}
 	}
-	if e = call(nil, "workspace", "rename", r.HostID, r.Label); e != nil {
-		return e
-	}
-	r.Status = "active"
-	return s.Store.WriteDatabase(db)
+	return nil
 }

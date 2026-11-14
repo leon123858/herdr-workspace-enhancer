@@ -1,5 +1,6 @@
 """Real Herdr startup check in an isolated Linux session; takes plugin root."""
 import json
+import sqlite3
 import os
 from pathlib import Path
 import subprocess
@@ -72,9 +73,11 @@ with tempfile.TemporaryDirectory(prefix="enhancer-plugin-test-") as directory:
             wait_text("event-renamed", True)
             call("workspace", "close", project["workspace_id"])
             wait_text("event-renamed", False)
-            databases = list(Path(directory).rglob("workspaces.json"))
+            databases = list(Path(directory).rglob("state.sqlite"))
             assert len(databases) == 1, databases
-            records = json.loads(databases[0].read_text())["records"]
+            with sqlite3.connect(databases[0]) as db:
+                db.row_factory = sqlite3.Row
+                records = [dict(r) for r in db.execute('SELECT * FROM workspaces WHERE is_manager = 0 ORDER BY rowid')]
             assert len(records) == 1 and records[0]["host_id"] == project["workspace_id"] and records[0]["status"] == "closed", records
             logs = call("plugin", "log", "list", "--plugin", "workspace.enhancer")["logs"]
             assert not any(x["status"] == "failed" for x in logs), logs
@@ -82,7 +85,11 @@ with tempfile.TemporaryDirectory(prefix="enhancer-plugin-test-") as directory:
                 assert any(x.get("event") == event and x["status"] == "succeeded" for x in logs), logs
             for pid in managers:
                 call("pane", "send-text", pid, "q")
-            print("PASS: two Linux managers; create/rename/close hooks update both TUIs automatically; manager workspaces absent from database")
+            integration_env = dict(env, ENHANCER_INTEGRATION="1",
+                                   HERDR_SOCKET_PATH=str(Path(directory) / "config/herdr/sessions" / session / "herdr.sock"))
+            subprocess.run(["go", "test", "./service", "-run", "^TestHerdrIntegration$", "-count=1", "-timeout=90s"],
+                           cwd=plugin, env=integration_env, check=True)
+            print("PASS: two managers; event synchronization; real archive/restore and lost-reply recovery")
         finally:
             subprocess.run(command + ["server", "stop"], env=env, check=False)
             server.wait(timeout=15)

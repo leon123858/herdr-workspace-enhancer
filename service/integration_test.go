@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"fmt"
+	domain "herdr-workspace-enhancer/model"
+	"herdr-workspace-enhancer/model/layout"
 	"herdr-workspace-enhancer/repository/herdr"
 	"herdr-workspace-enhancer/repository/state"
 	"os"
@@ -63,6 +65,7 @@ func runHerdrIntegration(t *testing.T, fault string) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	s := Service{Store: store, Host: client, ManagerID: "manager-not-in-test"}
 	records, e := s.Refresh(ctx)
 	if e != nil {
@@ -77,15 +80,21 @@ func runHerdrIntegration(t *testing.T, fault string) {
 	if id == "" {
 		t.Fatal("missing record")
 	}
-	if _, e = store.Save(id, 0, "中文筆記\nrestored"); e != nil {
+	if _, e = store.Save(id, "中文筆記\nrestored"); e != nil {
 		t.Fatal(e)
 	}
 	if e = s.Archive(ctx, id); e != nil {
 		t.Fatal(e)
 	}
+	if _, e = s.Refresh(ctx); e != nil {
+		t.Fatal(e)
+	}
 	host := &lostReplyHost{Client: client, fault: fault}
 	s.Host = host
 	e = s.Restore(ctx, id)
+	if e == nil {
+		_, e = s.Refresh(ctx)
+	}
 	if fault != "none" {
 		if e == nil || !host.injected {
 			t.Fatal("expected lost reply", e)
@@ -93,28 +102,33 @@ func runHerdrIntegration(t *testing.T, fault string) {
 		if _, err := s.Refresh(ctx); err != nil {
 			t.Fatal(err)
 		}
-		e = s.Restore(ctx, id)
+		r, err := store.Get(id)
+		if err != nil || r.HostID == original || r.Status != domain.WorkspaceActive {
+			t.Fatal(r, err)
+		}
+		defer client.Close(ctx, r.HostID)
+		return
 	}
 	if e != nil {
 		t.Fatal(e)
 	}
-	db, e := store.ReadDatabase()
+	records, e = store.List()
 	if e != nil {
 		t.Fatal(e)
 	}
-	for _, r := range db.Records {
+	for _, r := range records {
 		if r.ID != id {
 			continue
 		}
 		defer client.Close(ctx, r.HostID)
-		if r.Status != "active" || r.HostID == original {
+		if r.Status != domain.WorkspaceActive || r.HostID == original {
 			t.Fatal(r)
 		}
 		snap, e := client.Snapshot(ctx, herdr.Workspace{ID: r.HostID, Label: r.Label})
 		if e != nil {
 			t.Fatal(e)
 		}
-		if len(snap.Tabs) != 2 || snap.Tabs[1].Label != "中文 tab" || snap.Tabs[0].Root.Type != "split" || snap.Tabs[0].Root.Second.Type != "split" {
+		if len(snap.Tabs) != 2 || snap.Tabs[1].Label != "中文 tab" || snap.Tabs[0].Root.Type != layout.NodeSplit || snap.Tabs[0].Root.Second.Type != layout.NodeSplit {
 			t.Fatalf("unexpected snapshot: %+v", snap)
 		}
 	}

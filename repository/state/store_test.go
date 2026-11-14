@@ -1,45 +1,45 @@
 package state
 
-import (
-	"errors"
-	"testing"
-)
+import "testing"
 
-func TestNotes(t *testing.T) {
+func TestNotesLastWriterWinsAndSessionIsolation(t *testing.T) {
 	root := t.TempDir()
-	a, e := Open(root, "session-a")
+	a, e := Open(root, "a")
 	if e != nil {
 		t.Fatal(e)
 	}
-	b, e := Open(root, "session-b")
+	defer a.Close()
+	b, e := Open(root, "b")
 	if e != nil {
 		t.Fatal(e)
 	}
-	n, e := a.Save("workspace", 0, "中文\nnotes")
-	if e != nil {
+	defer b.Close()
+	if _, e = a.Save("workspace", "中文\nnotes"); e != nil {
 		t.Fatal(e)
 	}
-	if n.Revision != 1 {
-		t.Fatal(n)
+	n, e := a.Load("workspace")
+	if e != nil || n.Text != "中文\nnotes" {
+		t.Fatal(n, e)
 	}
-	if _, e = a.Save("workspace", 0, "lost update"); !errors.Is(e, ErrConflict) {
+	n, e = b.Load("workspace")
+	if e != nil || n.Text != "" {
+		t.Fatal(n, e)
+	}
+	if _, e = a.Save("workspace", "newer"); e != nil {
 		t.Fatal(e)
 	}
-	got, e := a.Load("workspace")
-	if e != nil || got.Text != n.Text {
-		t.Fatal(got, e)
-	}
-	got, e = b.Load("workspace")
-	if e != nil || got.Text != "" {
-		t.Fatal(got, e)
-	}
-	if _, e = a.Save("workspace", 1, ""); e != nil {
+	if _, e = a.Save("workspace", ""); e != nil {
 		t.Fatal(e)
+	}
+	n, e = a.Load("workspace")
+	if e != nil || n.Text != "" {
+		t.Fatal(n, e)
 	}
 }
 func TestRejectImplicitStorage(t *testing.T) {
 	for _, v := range []struct{ root, session string }{{"", "x"}, {"relative", "x"}, {t.TempDir(), ""}} {
-		if _, e := Open(v.root, v.session); e == nil {
+		if s, e := Open(v.root, v.session); e == nil {
+			s.Close()
 			t.Fatal(v)
 		}
 	}

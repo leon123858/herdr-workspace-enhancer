@@ -19,15 +19,6 @@ type APIError struct {
 
 func (e *APIError) Error() string { return e.Code + ": " + e.Message }
 
-// Retry only validation rejections known to precede mutation.
-func (e *APIError) Rejected() bool {
-	switch e.Code {
-	case "invalid_params", "invalid_request", "method_not_found":
-		return true
-	}
-	return false
-}
-
 type Runner func(context.Context, ...string) ([]byte, error)
 type Client struct{ Run Runner }
 

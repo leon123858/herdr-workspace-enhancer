@@ -4,108 +4,140 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"testing"
+
+	"herdr-workspace-enhancer/model"
 	"herdr-workspace-enhancer/model/layout"
 	"herdr-workspace-enhancer/repository/herdr"
 	"herdr-workspace-enhancer/repository/state"
-	"testing"
 )
 
 type restoreHost struct {
 	fakeHost
-	calls  int
-	failAt int
-	reject bool
+	calls, failAt int
+	lostCreate    bool
+	layoutHook    func() error
 }
 
-func (f *restoreHost) Call(_ context.Context, dst any, args ...string) error {
-	if args[0] == "pane" && args[1] == "get" {
-		return json.Unmarshal([]byte(`{"pane":{"pane_id":"p1","tab_id":"t1","workspace_id":"new"}}`), dst)
+func (h *restoreHost) Call(_ context.Context, dst any, args ...string) error {
+	h.calls++
+	if h.calls == h.failAt {
+		return errors.New("injected host failure")
 	}
-	if args[0] == "pane" && args[1] == "list" {
-		return json.Unmarshal([]byte(`{"panes":[{"pane_id":"p1","tab_id":"t1","workspace_id":"new"}]}`), dst)
-	}
-	f.calls++
-	if f.calls == f.failAt {
-		if f.reject {
-			return &herdr.APIError{Code: "invalid_params", Message: "rejected"}
+	if args[0]+" "+args[1] != "workspace create" && h.layoutHook != nil {
+		if err := h.layoutHook(); err != nil {
+			return err
 		}
-		return errors.New("connection lost")
 	}
 	raw := `{}`
 	switch args[0] + " " + args[1] {
 	case "workspace create":
+		h.live = append(h.live, herdr.Workspace{ID: "new", Label: args[5]})
+		if h.lostCreate {
+			return errors.New("lost creation reply")
+		}
 		raw = `{"workspace":{"workspace_id":"new"},"tab":{"tab_id":"t1"},"root_pane":{"pane_id":"p1"}}`
 	case "pane split":
 		raw = `{"pane":{"pane_id":"p2"}}`
 	case "tab create":
 		raw = `{"tab":{"tab_id":"t2"},"root_pane":{"pane_id":"p3"}}`
+	case "workspace rename":
+		h.live[0].Label = args[3]
+	}
+	if dst == nil {
+		return nil
 	}
 	return json.Unmarshal([]byte(raw), dst)
 }
 func restoreFixture(t *testing.T) (*Service, *restoreHost) {
 	t.Helper()
-	store, e := state.Open(t.TempDir(), "test")
-	if e != nil {
-		t.Fatal(e)
-	}
+	store := serviceStore(t)
 	dir := t.TempDir()
-	leaf := func() *layout.Node { return &layout.Node{Type: "pane", CWD: dir} }
-	snap := &herdr.Snapshot{Label: "project", Tabs: []herdr.SavedTab{{Label: "one", Root: &layout.Node{Type: "split", Direction: "right", Ratio: 0.4, First: leaf(), Second: leaf()}}, {Label: "two", Root: leaf()}}}
-	e = store.WriteDatabase(state.Database{Version: 1, Records: []state.Record{{ID: "record", Label: "project", Status: "archived", Snapshot: snap}}})
-	if e != nil {
-		t.Fatal(e)
-	}
-	host := &restoreHost{}
+	leaf := func() *layout.Node { return &layout.Node{Type: layout.NodePane, CWD: dir} }
+	snap := &herdr.Snapshot{Label: "project", Tabs: []herdr.SavedTab{{Label: "one", Root: &layout.Node{Type: layout.NodeSplit, Direction: "right", Ratio: .4, First: leaf(), Second: leaf()}}, {Label: "two", Root: leaf()}}}
+	saveRecord(t, store, model.Record{ID: "record", HostID: "old", Label: "project", Status: model.WorkspaceArchived, Snapshot: snap, Note: "keep note"})
+	host := &restoreHost{fakeHost: fakeHost{live: []herdr.Workspace{}}}
 	return &Service{Store: store, Host: host}, host
 }
-func TestRestore(t *testing.T) {
+func TestRestoreKeepsArchivedUntilSync(t *testing.T) {
 	s, h := restoreFixture(t)
+	h.layoutHook = func() error {
+		r, e := s.Store.Get("record")
+		if e != nil {
+			return e
+		}
+		if r.HostID != "old" || r.Status != model.WorkspaceArchived {
+			return errors.New("restore wrote before sync")
+		}
+		_, e = s.Store.Save("record", "edited during restore")
+		return e
+	}
 	if e := s.Restore(context.Background(), "record"); e != nil {
 		t.Fatal(e)
 	}
-	db, e := s.Store.ReadDatabase()
-	if e != nil {
-		t.Fatal(e)
+	r, e := s.Store.Get("record")
+	if e != nil || r.Status != model.WorkspaceArchived || r.HostID != "old" || r.Note != "edited during restore" || h.calls != 5 {
+		t.Fatal(r, e, h.calls)
 	}
-	r := db.Records[0]
-	if r.Status != "active" || r.HostID != "new" || h.calls != 6 || r.Snapshot == nil {
-		t.Fatal(r, h.calls)
+	h.layoutHook = nil
+	rows, e := s.Refresh(context.Background())
+	if e != nil || len(rows) != 1 || rows[0].ID != "record" || rows[0].Note != "edited during restore" {
+		t.Fatal(rows, e)
 	}
 }
-func TestRestoreDoesNotReplayUncertainMutation(t *testing.T) {
+func TestPartialRestoreRemainsActiveWithoutAutomaticReplay(t *testing.T) {
 	s, h := restoreFixture(t)
 	h.failAt = 3
 	if e := s.Restore(context.Background(), "record"); e == nil {
 		t.Fatal("expected failure")
 	}
+	r, _ := s.Store.Get("record")
+	if r.Status != model.WorkspaceActive || r.HostID != "new" || r.Snapshot == nil {
+		t.Fatal(r)
+	}
 	calls := h.calls
-	if e := s.Restore(context.Background(), "record"); e == nil {
-		t.Fatal("must stop at uncertain mutation")
+	if e := s.Restore(context.Background(), "record"); e == nil || h.calls != calls {
+		t.Fatal("partial restoration replayed", e)
 	}
-	if h.calls != calls {
-		t.Fatal("mutation was retried")
-	}
-	db, e := s.Store.ReadDatabase()
-	if e != nil {
-		t.Fatal(e)
-	}
-	if db.Records[0].Status != "restoring" || len(db.Records[0].Journal) != 3 {
-		t.Fatal(db)
+	rows, e := s.Refresh(context.Background())
+	if e != nil || len(rows) != 1 || rows[0].ID != "record" {
+		t.Fatal(rows, e)
 	}
 }
-
-func TestRestoreRetriesExplicitRejection(t *testing.T) {
+func TestLostCreationReplyRebindsInsteadOfDuplicating(t *testing.T) {
 	s, h := restoreFixture(t)
-	h.failAt = 3
-	h.reject = true
+	h.lostCreate = true
 	if e := s.Restore(context.Background(), "record"); e == nil {
-		t.Fatal("expected rejection")
+		t.Fatal("expected lost reply")
 	}
+	if _, e := s.Refresh(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	r, _ := s.Store.Get("record")
+	if r.HostID != "new" || r.Status != model.WorkspaceActive {
+		t.Fatal(r)
+	}
+	if e := s.Restore(context.Background(), "record"); e == nil || h.calls != 2 {
+		t.Fatal("creation repeated", e, h.calls)
+	}
+}
+func TestSyncRepairsFailedNewIDCommit(t *testing.T) {
+	s, _ := restoreFixture(t)
+	real := s.Store.(*state.Store)
+	s.Store = &failedCheckpointStore{Store: real, failAt: 1}
 	if e := s.Restore(context.Background(), "record"); e != nil {
 		t.Fatal(e)
 	}
-	db, e := s.Store.ReadDatabase()
-	if e != nil || db.Records[0].Status != "active" {
-		t.Fatal(db, e)
+	if _, e := s.Refresh(context.Background()); e == nil {
+		t.Fatal("expected failed sync binding")
+	}
+	r, _ := real.Get("record")
+	if r.Status != model.WorkspaceArchived || r.HostID != "old" {
+		t.Fatal("failed binding committed", r)
+	}
+	s.Store = real
+	rows, e := s.Refresh(context.Background())
+	if e != nil || len(rows) != 1 || rows[0].ID != "record" || rows[0].HostID != "new" || rows[0].Note != "keep note" {
+		t.Fatal(rows, e)
 	}
 }

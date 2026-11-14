@@ -959,7 +959,16 @@ func (m *Model) SetHeight(h int) {
 // Update is the Bubble Tea update loop.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if mouse, ok := msg.(tea.MouseMsg); ok {
+		if mouse.Button == tea.MouseButtonRight && mouse.Action == tea.MouseActionPress {
+			return m, m.copySelection()
+		}
+		wasDragging := m.dragging
 		m.selectMouse(mouse)
+		// Copy only when a selection gesture finishes, not on every motion or
+		// on a click, scroll, or repeated release event.
+		if wasDragging && mouse.Action == tea.MouseActionRelease && !m.dragging {
+			return m, m.copySelection()
+		}
 		return m, nil
 	}
 	if key, ok := msg.(tea.KeyMsg); ok {

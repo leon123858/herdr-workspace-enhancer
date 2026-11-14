@@ -1,4 +1,4 @@
-package main
+package controller
 
 import (
 	"bytes"
@@ -7,7 +7,7 @@ import (
 
 func TestCommands(t *testing.T) {
 	for _, args := range [][]string{nil, {"--help"}, {"open", "--help"}, {"sync", "--help"}, {"tui", "--help"}, {"--open"}, {"--sync"}, {"invalid"}, {"sync", "extra"}} {
-		c := newCommand()
+		c := New().Command()
 		c.SetArgs(args)
 		var out bytes.Buffer
 		c.SetOut(&out)

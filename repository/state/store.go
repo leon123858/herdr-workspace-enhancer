@@ -1,23 +1,33 @@
-// Package state stores plugin data outside project directories.
+// Package state persists session data in SQLite through GORM.
 package state
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"herdr-workspace-enhancer/model"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
-)
+	"time"
 
-var ErrConflict = model.ErrConflict
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
+	"herdr-workspace-enhancer/model"
+)
 
 type Note = model.Note
 
-type Store struct{ Dir string }
+type Store struct {
+	dir string
+	db  *gorm.DB
+}
 
-// Open requires an explicit host-owned state directory and session identity.
+// Open requires an explicit host-owned directory and session identity. Tables
+// are created or extended by AutoMigrate; existing JSON files are not imported.
 func Open(root, session string) (*Store, error) {
 	if root == "" || session == "" {
 		return nil, errors.New("plugin state directory and session identity are required")
@@ -30,50 +40,78 @@ func Open(root, session string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	return &Store{Dir: dir}, nil
-}
-func (s *Store) path(id string) string {
-	sum := sha256.Sum256([]byte(id))
-	return filepath.Join(s.Dir, hex.EncodeToString(sum[:])+".json")
-}
-func (s *Store) Load(id string) (Note, error) {
-	var n Note
-	b, err := os.ReadFile(s.path(id))
-	if errors.Is(err, os.ErrNotExist) {
-		return n, nil
-	}
+	s := &Store{dir: dir}
+	// Serialize migrations across TUI/action/event processes, including first use.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	unlock, err := s.WaitLock(ctx, "schema")
 	if err != nil {
-		return n, err
-	}
-	err = json.Unmarshal(b, &n)
-	return n, err
-}
-
-// Save serializes edits and rejects stale revisions.
-func (s *Store) Save(id string, expected uint64, text string) (Note, error) {
-	path := s.path(id)
-	unlock, err := s.Lock(filepath.Base(path))
-	if err != nil {
-		return Note{}, err
+		return nil, err
 	}
 	defer unlock()
-
-	old, err := s.Load(id)
+	path := filepath.Join(dir, "state.sqlite")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		return Note{}, err
+		return nil, err
 	}
-	if old.Revision != expected {
-		return Note{}, ErrConflict
+	if err = f.Close(); err != nil {
+		return nil, err
 	}
-	n := Note{Revision: expected + 1, Text: text}
-	b, err := json.Marshal(n)
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	if len(u.Path) > 1 && u.Path[1] == ':' {
+		u.Path = "/" + u.Path
+	}
+	q := url.Values{}
+	q.Set("_txlock", "immediate")
+	q.Add("_pragma", "busy_timeout(5000)")
+	q.Add("_pragma", "journal_mode(WAL)")
+	q.Add("_pragma", "foreign_keys(1)")
+	q.Add("_pragma", "synchronous(FULL)")
+	u.RawQuery = q.Encode()
+	db, err := gorm.Open(sqlite.Open(u.String()), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
-		return Note{}, err
+		return nil, err
 	}
-	if err = s.write(path, b); err != nil {
-		return Note{}, err
+	s.db = db
+	pool, err := db.DB()
+	if err != nil {
+		return nil, err
 	}
-	return n, nil
+	pool.SetMaxOpenConns(1)
+	pool.SetMaxIdleConns(1)
+	if err = db.AutoMigrate(&workspaceRow{}); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("migrate session database: %w", err)
+	}
+	return s, nil
+}
+func (s *Store) Close() error {
+	pool, err := s.db.DB()
+	if err != nil {
+		return err
+	}
+	return pool.Close()
 }
 
-func (s *Store) Directory() string { return s.Dir }
+// Shutdown lets the controller's DI container release SQLite connections.
+func (s *Store) Shutdown() error   { return s.Close() }
+func (s *Store) Directory() string { return s.dir }
+
+func (s *Store) Load(id string) (Note, error) {
+	var r workspaceRow
+	err := s.db.Select("note").Where("id = ?", id).Take(&r).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return Note{}, nil
+	}
+	return Note{Text: r.Note}, err
+}
+
+// Save only updates note text. Workspace metadata is never overwritten, and
+// concurrent editors deliberately use last-writer-wins semantics.
+func (s *Store) Save(id, text string) (Note, error) {
+	if id == "" {
+		return Note{}, fmt.Errorf("workspace record ID is required")
+	}
+	err := s.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoUpdates: clause.AssignmentColumns([]string{"note"})}).Create(&workspaceRow{ID: id, Status: model.WorkspaceClosed, Note: text}).Error
+	return Note{Text: text}, err
+}

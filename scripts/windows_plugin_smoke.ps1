@@ -1,5 +1,7 @@
 param([Parameter(Mandatory=$true)][string]$HerdrBin,[Parameter(Mandatory=$true)][string]$PluginRoot)
 $ErrorActionPreference = 'Stop'
+# Python's standard sqlite3 module inspects the session database for this test.
+$python = (Get-Command python -ErrorAction Stop).Source
 $root = Join-Path $env:TEMP ('enhancer-plugin-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $root | Out-Null
 $oldAppData=$env:APPDATA; $oldLocal=$env:LOCALAPPDATA; $oldSocket=$env:HERDR_SOCKET_PATH
@@ -68,9 +70,12 @@ try {
   Wait-ManagerText 'event-renamed' $true
   Invoke-Herdr @('workspace','close',$project.workspace_id) | Out-Null
   Wait-ManagerText 'event-renamed' $false
-  $databases=@(Get-ChildItem -LiteralPath $root -Filter workspaces.json -Recurse)
+  $databases=@(Get-ChildItem -LiteralPath $root -Filter state.sqlite -Recurse)
   if($databases.Count -ne 1){throw 'Expected one session database'}
-  $records=@((Get-Content -LiteralPath $databases[0].FullName -Raw | ConvertFrom-Json).records)
+  $query = 'import json,sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.row_factory=sqlite3.Row; print(json.dumps([dict(r) for r in db.execute("SELECT * FROM workspaces WHERE is_manager = 0 ORDER BY rowid")]))'
+  $recordJson = & $python -c $query $databases[0].FullName
+  if($LASTEXITCODE -ne 0){throw 'Failed to inspect SQLite session database'}
+  $records=@($recordJson | ConvertFrom-Json)
   if($records.Count -ne 1 -or $records[0].host_id -ne $project.workspace_id -or $records[0].status -ne 'closed'){throw 'Manager recorded or project close not reconciled'}
   $logs=(Invoke-Herdr @('plugin','log','list','--plugin','workspace.enhancer')).logs
   foreach($eventName in @('workspace.created','workspace.renamed','workspace.closed')) {

@@ -2,14 +2,28 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"herdr-workspace-enhancer/model"
 	"herdr-workspace-enhancer/repository/herdr"
+	"time"
 
 	"path/filepath"
 )
 
 // Each invocation owns a fresh workspace and replaces only its initial shell.
-func OpenManager(ctx context.Context, client *herdr.Client, store ManagerStore) error {
+func OpenManager(ctx context.Context, client *herdr.Client, store ManagerStore) (result error) {
+	svc := &Service{Store: store, Host: client}
+	repairNeeded := false
+	defer func() {
+		if result != nil && repairNeeded {
+			repairCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, err := svc.Refresh(repairCtx); err != nil {
+				result = errors.Join(result, fmt.Errorf("repair sync failed: %w", err))
+			}
+		}
+	}()
 	var created struct {
 		Workspace herdr.Workspace `json:"workspace"`
 		Tab       herdr.Tab       `json:"tab"`
@@ -23,21 +37,39 @@ func OpenManager(ctx context.Context, client *herdr.Client, store ManagerStore) 
 			return err
 		}
 		defer unlock()
-		if err := client.Call(ctx, &created, "workspace", "create", "--cwd", filepath.Clean(store.Directory()), "--label", "Workspace Enhancer", "--no-focus"); err != nil {
+		recordID, err := newID()
+		if err != nil {
+			return err
+		}
+		record := model.Record{ID: recordID, Label: "Workspace Enhancer", Status: model.WorkspaceClosed, IsManager: true}
+		if err = store.CreateManager(ctx, record); err != nil {
+			return err
+		}
+		repairNeeded = true
+		if err := client.Call(ctx, &created, "workspace", "create", "--cwd", filepath.Clean(store.Directory()), "--label", managerPrefix+recordID, "--no-focus"); err != nil {
 			return fmt.Errorf("create manager workspace: %w", err)
 		}
 		if created.Workspace.ID == "" {
 			return fmt.Errorf("manager creation returned no workspace ID")
-		}
-		if err := store.RegisterManager(created.Workspace.ID); err != nil {
-			return fmt.Errorf("register manager workspace %s: %w", created.Workspace.ID, err)
 		}
 		return nil
 	}()
 	if err != nil {
 		return err
 	}
+	repairNeeded = false
+	if _, err := svc.Refresh(ctx); err != nil {
+		return err
+	}
+	repairNeeded = true
 	id := created.Workspace.ID
+	registered, err := store.IsManager(id)
+	if err != nil {
+		return err
+	}
+	if !registered {
+		return fmt.Errorf("manager identity not registered")
+	}
 	if created.Tab.ID == "" || created.Root.ID == "" {
 		return fmt.Errorf("manager creation returned incomplete initial tab or pane IDs")
 	}
@@ -62,7 +94,6 @@ func OpenManager(ctx context.Context, client *herdr.Client, store ManagerStore) 
 }
 
 type ManagerStore interface {
-	WaitLock(context.Context, string) (func(), error)
-	RegisterManager(string) error
+	model.WorkspaceStore
 	Directory() string
 }

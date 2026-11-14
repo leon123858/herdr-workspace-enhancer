@@ -9,6 +9,12 @@ import (
 	"strings"
 )
 
+// ClipboardCopied reports that the OSC52 request was written to terminal output.
+// Whether the clipboard is updated depends on the terminal's OSC52 support.
+type ClipboardCopied struct{}
+
+type ClipboardCopyFailed struct{ Err error }
+
 func (m *Model) deleteSelection() {
 	if m.anchor == m.head {
 		return
@@ -37,9 +43,9 @@ func (m Model) copySelection() tea.Cmd {
 	return func() tea.Msg {
 		_, err := fmt.Fprintf(os.Stdout, "\x1b]52;c;%s\a", encoded)
 		if err != nil {
-			return pasteErrMsg{err}
+			return ClipboardCopyFailed{Err: err}
 		}
-		return nil
+		return ClipboardCopied{}
 	}
 }
 
@@ -106,7 +112,19 @@ func (m *Model) selectMouse(mouse tea.MouseMsg) {
 		m.anchor = pos
 	}
 	m.head = pos
+	// Keep the insertion cursor at the clicked/dragged endpoint, including wrapped
+	// lines and wide Unicode characters. Selection offsets remain rune-based.
+	prefix := string([]rune(m.Value())[:pos])
+	m.row = strings.Count(prefix, "\n")
+	parts := strings.Split(prefix, "\n")
+	m.SetCursor(len([]rune(parts[len(parts)-1])))
 	if mouse.Action == tea.MouseActionRelease {
 		m.dragging = false
 	}
 }
+
+// DocumentStart moves to the first line and reveals the start of the note.
+func (m *Model) DocumentStart() { m.row = 0; m.SetCursor(0); m.repositionView() }
+
+// DocumentEnd moves to the last line and reveals the end of the note.
+func (m *Model) DocumentEnd() { m.row = len(m.value) - 1; m.CursorEnd(); m.repositionView() }

@@ -1,6 +1,6 @@
 package model
 
+// Note is saved with last-writer-wins semantics.
 type Note struct {
-	Revision uint64 `json:"revision"`
-	Text     string `json:"text"`
+	Text string `json:"text"`
 }

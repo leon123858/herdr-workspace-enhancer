@@ -1,4 +1,4 @@
-// Package workspace coordinates durable state with Herdr operations.
+// Package service coordinates plugin state with Herdr operations.
 package service
 
 import (
@@ -7,9 +7,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	state "herdr-workspace-enhancer/model"
-	"herdr-workspace-enhancer/repository/herdr"
 	"reflect"
+	"strings"
+	"time"
+
+	"herdr-workspace-enhancer/model"
+	"herdr-workspace-enhancer/repository/herdr"
 )
 
 type Host interface {
@@ -17,6 +20,8 @@ type Host interface {
 	Snapshot(context.Context, herdr.Workspace) (herdr.Snapshot, error)
 	Close(context.Context, string) error
 }
+type Store = model.WorkspaceStore
+
 type Service struct {
 	Store         Store
 	Host          Host
@@ -24,246 +29,201 @@ type Service struct {
 	ManagerID     string
 }
 
-func (s *Service) managerIDs() (map[string]bool, error) {
-	ids, err := s.Store.ManagerIDs()
+const restorePrefix = "enhancer-restore-"
+const managerPrefix = "enhancer-manager-"
+
+// Refresh accepts only a successful complete scan. Herdr's session must already
+// be restored by the caller: an actual successful empty list means no workspaces.
+// The session lock excludes our open/archive/restore operations while scanning;
+// one SQL statement atomically applies all computed synchronization results.
+func (s *Service) Refresh(ctx context.Context) ([]model.Record, error) {
+	unlock, err := s.Store.WaitLock(ctx, "session")
 	if err != nil {
 		return nil, err
-	}
-	if s.ManagerID != "" {
-		ids[s.ManagerID] = true
-	}
-	return ids, nil
-}
-
-func (s *Service) Refresh(ctx context.Context) ([]state.Record, error) {
-	unlock, e := s.Store.WaitLock(ctx, "session")
-	if e != nil {
-		return nil, e
 	}
 	defer unlock()
-	db, e := s.Store.ReadDatabase()
-	if e != nil {
-		return nil, e
+	return s.refreshLocked(ctx)
+}
+
+func (s *Service) refreshLocked(ctx context.Context) ([]model.Record, error) {
+	live, err := s.Host.Workspaces(ctx)
+	if err != nil {
+		return nil, err
 	}
-	live, e := s.Host.Workspaces(ctx)
-	if e != nil {
-		return nil, e
+	if live == nil {
+		return nil, fmt.Errorf("Herdr workspace scan is incomplete")
 	}
-	managers, e := s.managerIDs()
-	if e != nil {
-		return nil, e
-	}
-	// Remove old manager rows, but leave separately stored notes untouched.
-	retained := db.Records[:0]
-	for _, r := range db.Records {
-		if !managers[r.HostID] {
-			retained = append(retained, r)
-		}
-	}
-	db.Records = retained
-	// Reattach a restoration whose create reply was lost before HostID saved.
-	for i := range db.Records {
-		r := &db.Records[i]
-		if managers[r.HostID] {
-			continue
-		}
-		if r.Status != "restoring" || r.HostID != "" {
-			continue
-		}
-		var candidates []herdr.Workspace
-		for _, w := range live {
-			if w.Label == "enhancer-restore-"+r.ID {
-				candidates = append(candidates, w)
-			}
-		}
-		if len(candidates) == 1 {
-			r.HostID = candidates[0].ID
-		}
-	}
+	seen := map[string]bool{}
 	for _, w := range live {
-		if managers[w.ID] {
-			continue
+		if w.ID == "" || seen[w.ID] {
+			return nil, fmt.Errorf("invalid Herdr workspace identity")
 		}
-		found := false
-		for i := range db.Records {
-			r := &db.Records[i]
-			if r.HostID == w.ID && r.Status != "archived" {
-				if r.Status == "missing" || r.Status == "closed" {
-					r.Status = "active"
-				}
-				if r.Status != "restoring" {
-					r.Label = w.Label
-				}
-				found = true
-				break
-			}
-		}
-		if !found {
-			id, e := newID()
-			if e != nil {
-				return nil, e
-			}
-			db.Records = append(db.Records, state.Record{ID: id, HostID: w.ID, Label: w.Label, Status: "active"})
-		}
+		seen[w.ID] = true
 	}
-	for i := range db.Records {
-		r := &db.Records[i]
-		if managers[r.HostID] {
-			continue
+	records, err := s.Store.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var renames []model.Record
+	err = func() error {
+		results := make([]model.Record, 0, len(records)+len(live))
+		byHost := map[string]model.Record{}
+		byID := map[string]model.Record{}
+		for _, r := range records {
+			byID[r.ID] = r
+			if r.HostID != "" {
+				byHost[r.HostID] = r
+			}
 		}
-		exists := false
 		for _, w := range live {
-			if w.ID == r.HostID {
-				exists = true
-				break
+			r, found := byHost[w.ID]
+			if !found {
+				// A creation response can be lost before its new ID is persisted. The
+				// temporary label ties it back to the original note without a journal.
+				prefix := restorePrefix
+				if strings.HasPrefix(w.Label, managerPrefix) {
+					prefix = managerPrefix
+				}
+				if candidate, ok := byID[strings.TrimPrefix(w.Label, prefix)]; ok && strings.HasPrefix(w.Label, prefix) && candidate.IsManager == (prefix == managerPrefix) {
+					r = candidate
+					found = true
+				}
+			}
+			if !found {
+				id, e := newID()
+				if e != nil {
+					return e
+				}
+				r = model.Record{ID: id}
+			}
+			// One record must never be rebound to multiple live workspaces.
+			if previous, exists := byID[r.ID]; exists && previous.HostID != "" && previous.HostID != w.ID && seen[previous.HostID] {
+				return fmt.Errorf("ambiguous workspace binding for %s", r.ID)
+			}
+			r.HostID = w.ID
+			r.Status = model.WorkspaceActive
+			temporaryLabel := w.Label == restorePrefix+r.ID || w.Label == managerPrefix+r.ID
+			if !temporaryLabel {
+				r.Label = w.Label
+			}
+			if r.Label == "" {
+				r.Label = w.Label
+			}
+			if w.ID == s.ManagerID {
+				r.IsManager = true
+			}
+			if temporaryLabel && w.Label != r.Label {
+				renames = append(renames, r)
+			}
+			results = append(results, r)
+			byID[r.ID] = r
+		}
+		for _, original := range records {
+			r := byID[original.ID]
+			if !seen[r.HostID] {
+				switch r.Status {
+				case model.WorkspaceActive:
+					r.Status = model.WorkspaceClosed
+				case model.WorkspaceArchiving:
+					r.Status = model.WorkspaceArchived
+				}
+				results = append(results, r)
 			}
 		}
-		if !exists {
-			if r.Status == "archiving" {
-				r.Status = "archived"
-				r.HostID = ""
-			} else if r.Status == "active" || r.Status == "missing" {
-				r.Status = "closed"
-			}
-		}
-	}
-	if e = s.Store.WriteDatabase(db); e != nil {
-		return nil, e
-	}
-	rows := []state.Record{}
-	for _, r := range db.Records {
-		if !managers[r.HostID] && r.Status != "closed" {
-			rows = append(rows, r)
-		}
-	}
-	return rows, nil
-}
-
-// StoredRows reads the atomically replaced database without querying Herdr.
-// Open TUIs use this to observe updates made by event hook processes.
-func (s *Service) StoredRows() ([]state.Record, error) {
-	db, err := s.Store.ReadDatabase()
+		return s.Store.ApplySync(ctx, results)
+	}()
 	if err != nil {
 		return nil, err
 	}
-	managers, err := s.managerIDs()
-	if err != nil {
-		return nil, err
-	}
-	rows := []state.Record{}
-	for _, r := range db.Records {
-		if !managers[r.HostID] && r.Status != "closed" {
-			rows = append(rows, r)
+	for _, r := range renames {
+		caller, ok := s.Host.(Caller)
+		if !ok {
+			return nil, fmt.Errorf("host does not support temporary workspace name cleanup")
+		}
+		if err := caller.Call(ctx, nil, "workspace", "rename", r.HostID, r.Label); err != nil {
+			return nil, fmt.Errorf("clean up workspace name: %w", err)
 		}
 	}
-	return rows, nil
+	return s.Store.List()
 }
+func (s *Service) StoredRows() ([]model.Record, error)      { return s.Store.List() }
+func (s *Service) Load(id string) (model.Note, error)       { return s.Store.Load(id) }
+func (s *Service) Save(id, text string) (model.Note, error) { return s.Store.Save(id, text) }
 
-var ErrPreviewChanged = errors.New("workspace 已變更，請重新預覽並確認封存")
+var ErrPreviewChanged = errors.New("workspace has changed; preview it again and confirm archiving")
 
 func (s *Service) Archive(ctx context.Context, id string) error { return s.archive(ctx, id, nil) }
-func (s *Service) ArchiveConfirmed(ctx context.Context, preview ArchivePreview) error {
-	return s.archive(ctx, preview.RecordID, &preview)
+func (s *Service) ArchiveConfirmed(ctx context.Context, p ArchivePreview) error {
+	return s.archive(ctx, p.RecordID, &p)
 }
 func (s *Service) archive(ctx context.Context, id string, preview *ArchivePreview) error {
 	if s.MutationError != nil {
 		return s.MutationError
 	}
-	unlock, e := s.Store.WaitLock(ctx, "session")
-	if e != nil {
-		return e
+	unlock, err := s.Store.WaitLock(ctx, "session")
+	if err != nil {
+		return err
 	}
 	defer unlock()
-	db, e := s.Store.ReadDatabase()
-	if e != nil {
-		return e
+	r, err := s.Store.Get(id)
+	if err != nil {
+		return err
 	}
-	for i := range db.Records {
-		r := &db.Records[i]
-		if r.ID != id {
-			continue
-		}
-		if preview != nil && preview.HostID != r.HostID {
-			return ErrPreviewChanged
-		}
-		managers, err := s.managerIDs()
-		if err != nil {
-			return err
-		}
-		if managers[r.HostID] {
-			return fmt.Errorf("cannot archive the manager workspace")
-		}
-		if r.Status != "active" && r.Status != "archiving" {
-			return fmt.Errorf("workspace is %s", r.Status)
-		}
-		// Reconcile a previous uncertain close before making another request.
-		live, e := s.Host.Workspaces(ctx)
-		if e != nil {
-			return e
-		}
-		var target *herdr.Workspace
-		for j := range live {
-			if live[j].ID == r.HostID {
-				target = &live[j]
-				break
-			}
-		}
-		if target == nil {
-			if r.Status == "archiving" && r.Snapshot != nil {
-				r.Status = "archived"
-				r.HostID = ""
-				return s.Store.WriteDatabase(db)
-			}
-			return fmt.Errorf("workspace no longer exists")
-		}
-		snapshot, e := s.Host.Snapshot(ctx, *target)
-		if e != nil {
-			return e
-		}
-		if preview != nil && !reflect.DeepEqual(preview.Snapshot, snapshot) {
-			return ErrPreviewChanged
-		}
-		r.Snapshot = &snapshot
-		r.Status = "archiving"
-		if e = s.Store.WriteDatabase(db); e != nil {
-			return e
-		}
-		closeErr := s.Host.Close(ctx, r.HostID)
-		live, e = s.Host.Workspaces(ctx)
-		if e != nil {
-			return fmt.Errorf("archive outcome is uncertain; refresh to reconcile: %w", e)
-		}
-		for _, w := range live {
-			if w.ID == r.HostID {
-				if closeErr != nil {
-					return closeErr
-				}
-				return fmt.Errorf("workspace remains open")
-			}
-		}
-		r.HostID = ""
-		r.Status = "archived"
-		return s.Store.WriteDatabase(db)
+	if r.IsManager || r.HostID == s.ManagerID && s.ManagerID != "" {
+		return fmt.Errorf("cannot archive manager workspace")
 	}
-	return fmt.Errorf("workspace record not found")
+	if r.Status != model.WorkspaceActive {
+		return fmt.Errorf("workspace is %s", r.Status)
+	}
+	if preview != nil && preview.HostID != r.HostID {
+		return ErrPreviewChanged
+	}
+	snapshot, err := s.Host.Snapshot(ctx, herdr.Workspace{ID: r.HostID, Label: r.Label})
+	if err != nil {
+		return err
+	}
+	if preview != nil && !reflect.DeepEqual(preview.Snapshot, snapshot) {
+		return ErrPreviewChanged
+	}
+	err = s.Store.ArchiveIntent(ctx, id, r.HostID, &snapshot)
+	if err != nil {
+		return err
+	}
+	if err = s.Host.Close(ctx, r.HostID); err != nil {
+		return s.repairLocked(err)
+	}
+	return nil
 }
 
-type Store interface {
-	WaitLock(context.Context, string) (func(), error)
-	ReadDatabase() (state.Database, error)
-	WriteDatabase(state.Database) error
-	ManagerIDs() (map[string]bool, error)
-	Load(string) (state.Note, error)
-	Save(string, uint64, string) (state.Note, error)
-}
-
-func (s *Service) Load(id string) (state.Note, error) { return s.Store.Load(id) }
-func (s *Service) Save(id string, revision uint64, text string) (state.Note, error) {
-	return s.Store.Save(id, revision, text)
+// Failure repair is a separate logical operation with its own bounded context.
+// The caller already owns the session lock, so it must not acquire it again.
+func (s *Service) repairLocked(original error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := s.refreshLocked(ctx)
+	if err != nil {
+		return errors.Join(original, fmt.Errorf("repair sync failed: %w", err))
+	}
+	return original
 }
 
 func newID() (string, error) {
 	var b [16]byte
-	_, e := rand.Read(b[:])
-	return hex.EncodeToString(b[:]), e
+	_, err := rand.Read(b[:])
+	return hex.EncodeToString(b[:]), err
+}
+
+// Focus has no action writes; a failed host call triggers one independent sync.
+func (s *Service) Focus(ctx context.Context, host string, focus func(context.Context, string) error) error {
+	original := focus(ctx, host)
+	if original == nil {
+		return nil
+	}
+	repairCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := s.Refresh(repairCtx)
+	if err != nil {
+		return errors.Join(original, fmt.Errorf("repair sync failed: %w", err))
+	}
+	return original
 }
