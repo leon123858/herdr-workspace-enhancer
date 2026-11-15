@@ -15,7 +15,6 @@ import (
 	keybind "github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 type refreshed struct {
@@ -42,10 +41,11 @@ func pollLater() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return pollState{} })
 }
 
-type Model struct {
-	Settings                  *workspace.SettingsService
-	Service                   *workspace.Service
-	Focus                     func(context.Context, string) error
+// model implements UI and holds the workspace manager's interaction state.
+type model struct {
+	settings                  *workspace.SettingsService
+	service                   *workspace.Service
+	focus                     func(context.Context, string) error
 	records                   []state.Record
 	cursor, listOffset        int
 	filter                    Filter
@@ -66,27 +66,15 @@ type Model struct {
 	width, height             int
 }
 
-func New(s *workspace.Service, focus func(context.Context, string) error) Model {
-	lipgloss.SetHasDarkBackground(true)
-	editor := textarea.New()
-	editor.CharLimit = 0
-	editor.MaxHeight = 0
-	editor.MaxWidth = 0
-	search := textinput.New()
-	search.Placeholder = "Search workspaces"
-	search.CharLimit = 200
-	m := Model{Service: s, Focus: focus, editor: editor, search: search, ratio: state.DefaultWorkspaceRatio, width: 80, height: 24}
-	if s != nil && s.MutationError != nil {
-		m.status = s.MutationError.Error()
-	}
-	m.resize()
-	return m
+func (m model) refresh() tea.Cmd {
+	return func() tea.Msg { r, e := m.service.Refresh(context.Background()); return refreshed{r, e} }
 }
-func (m Model) refresh() tea.Cmd {
-	return func() tea.Msg { r, e := m.Service.Refresh(context.Background()); return refreshed{r, e} }
+
+func (m model) Init() tea.Cmd {
+	return tea.Batch(m.refresh(), pollLater())
 }
-func (m Model) Init() tea.Cmd { return tea.Batch(m.refresh(), pollLater()) }
-func (m Model) visible() []state.Record {
+
+func (m model) visible() []state.Record {
 	var rows []state.Record
 	for _, r := range m.records {
 		if m.filter == FilterActive && r.Status != state.WorkspaceActive || m.filter == FilterArchived && r.Status != state.WorkspaceArchived {
@@ -98,17 +86,17 @@ func (m Model) visible() []state.Record {
 	}
 	return rows
 }
-func (m Model) selected() (state.Record, bool) {
+func (m model) selected() (state.Record, bool) {
 	rows := m.visible()
 	if len(rows) == 0 {
 		return state.Record{}, false
 	}
 	return rows[max(0, min(m.cursor, len(rows)-1))], true
 }
-func (m Model) dirty() bool { return m.editingID != "" && m.editor.Value() != m.note.Text }
+func (m model) dirty() bool { return m.editingID != "" && m.editor.Value() != m.note.Text }
 
 // syncNote only replaces clean content. A removed workspace can retain a draft.
-func (m *Model) syncNote(reload bool) {
+func (m *model) syncNote(reload bool) {
 	if m.dirty() {
 		return
 	}
@@ -121,14 +109,14 @@ func (m *Model) syncNote(reload bool) {
 		m.editor.SetValue("")
 		return
 	}
-	if m.Service == nil {
+	if m.service == nil {
 		return
 	}
 	if !reload && m.editingID == r.ID && m.noteLoaded {
 		m.editingLabel = r.Label
 		return
 	}
-	n, e := m.Service.Load(r.ID)
+	n, e := m.service.Load(r.ID)
 	if e != nil {
 		if m.editingID != r.ID {
 			m.editor.SetValue("")
@@ -150,12 +138,12 @@ func (m *Model) syncNote(reload bool) {
 		m.editor.DocumentStart()
 	}
 }
-func (m *Model) save() bool {
-	if !m.noteLoaded || m.Service == nil {
+func (m *model) save() bool {
+	if !m.noteLoaded || m.service == nil {
 		m.status = "Load the note successfully before saving"
 		return false
 	}
-	n, e := m.Service.Save(m.editingID, m.editor.Value())
+	n, e := m.service.Save(m.editingID, m.editor.Value())
 	if e != nil {
 		m.status = "Could not save note: " + e.Error()
 		return false
@@ -164,11 +152,11 @@ func (m *Model) save() bool {
 	m.status = "Note saved"
 	return true
 }
-func (m *Model) discard() bool {
-	if m.Service == nil {
+func (m *model) discard() bool {
+	if m.service == nil {
 		return false
 	}
-	n, e := m.Service.Load(m.editingID)
+	n, e := m.service.Load(m.editingID)
 	if e != nil {
 		m.status = "Could not reload note: " + e.Error()
 		return false
@@ -179,7 +167,7 @@ func (m *Model) discard() bool {
 	m.status = "Changes discarded"
 	return true
 }
-func (m *Model) setMode(mode Mode) tea.Cmd {
+func (m *model) setMode(mode Mode) tea.Cmd {
 	m.mode = mode
 	m.editor.Blur()
 	m.search.Blur()
@@ -191,7 +179,7 @@ func (m *Model) setMode(mode Mode) tea.Cmd {
 	}
 	return nil
 }
-func (m *Model) request(a action) tea.Cmd {
+func (m *model) request(a action) tea.Cmd {
 	if a.kind == ActionSelect {
 		r, ok := m.selected()
 		if ok && r.ID == a.id {
@@ -207,7 +195,7 @@ func (m *Model) request(a action) tea.Cmd {
 	}
 	return m.execute(a)
 }
-func (m *Model) execute(a action) tea.Cmd {
+func (m *model) execute(a action) tea.Cmd {
 	switch a.kind {
 	case ActionSelect:
 		for i, r := range m.visible() {
@@ -238,7 +226,7 @@ func (m *Model) execute(a action) tea.Cmd {
 		r, ok := m.selected()
 		if ok && r.Status == state.WorkspaceActive {
 			m.busy = true
-			return func() tea.Msg { p, e := m.Service.Preview(context.Background(), r.ID); return previewed{p, e} }
+			return func() tea.Msg { p, e := m.service.Preview(context.Background(), r.ID); return previewed{p, e} }
 		}
 	case ActionActivate:
 		r, ok := m.selected()
@@ -246,10 +234,10 @@ func (m *Model) execute(a action) tea.Cmd {
 			m.busy = true
 			return func() tea.Msg {
 				if r.Status == state.WorkspaceArchived {
-					return finished{m.Service.Restore(context.Background(), r.ID)}
+					return finished{m.service.Restore(context.Background(), r.ID)}
 				}
-				if r.Status == state.WorkspaceActive && m.Focus != nil {
-					return finished{m.Service.Focus(context.Background(), r.HostID, m.Focus)}
+				if r.Status == state.WorkspaceActive && m.focus != nil {
+					return finished{m.service.Focus(context.Background(), r.HostID, m.focus)}
 				}
 				return finished{fmt.Errorf("workspace is %s", r.Status)}
 			}
@@ -257,7 +245,7 @@ func (m *Model) execute(a action) tea.Cmd {
 	}
 	return nil
 }
-func (m *Model) confirm(decision Confirmation) tea.Cmd {
+func (m *model) confirm(decision Confirmation) tea.Cmd {
 	a := m.pending
 	switch decision {
 	case ConfirmationSave:
@@ -280,7 +268,7 @@ func (m *Model) confirm(decision Confirmation) tea.Cmd {
 	m.setMode(m.returnMode)
 	return m.execute(a)
 }
-func (m *Model) updateRows(rows []state.Record) {
+func (m *model) updateRows(rows []state.Record) {
 	selected, had := m.selected()
 	m.records = rows
 	m.cursor = min(m.cursor, max(0, len(m.visible())-1))
@@ -297,7 +285,10 @@ func (m *Model) updateRows(rows []state.Record) {
 	m.listOffset = max(0, min(m.listOffset, max(0, len(m.visible())-m.listHeight())))
 	m.syncNote(true)
 }
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+
+// Update is the Bubble Tea event hook. It returns the next state and optional
+// work whose result will be delivered by the framework as another message.
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
 	case textarea.ClipboardCopied:
 		m.copyNotice = "Selection copied"
@@ -323,10 +314,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 		return m, nil
 	case pollState:
-		if m.busy || m.mode == ModeConfirmArchive || m.mode == ModeConfirmUnsaved || m.Service == nil {
+		if m.busy || m.mode == ModeConfirmArchive || m.mode == ModeConfirmUnsaved || m.service == nil {
 			return m, pollLater()
 		}
-		return m, func() tea.Msg { r, e := m.Service.StoredRows(); return storedRows{r, e} }
+		return m, func() tea.Msg {
+			r, e := m.service.StoredRows()
+			return storedRows{r, e}
+		}
 	case storedRows:
 		if !m.busy && m.mode != ModeConfirmArchive && m.mode != ModeConfirmUnsaved {
 			if v.err != nil {
@@ -360,7 +354,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = "Operation accepted; waiting for sync"
 		}
-		return m, func() tea.Msg { r, e := m.Service.StoredRows(); return refreshed{r, e} }
+		return m, func() tea.Msg { r, e := m.service.StoredRows(); return refreshed{r, e} }
 	case tea.MouseMsg:
 		return m.handleMouse(v)
 	case tea.KeyMsg:
@@ -445,9 +439,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	var cmd tea.Cmd
-	if m.mode == ModeEdit {
+	switch m.mode {
+	case ModeEdit:
 		m.editor, cmd = m.editor.Update(msg)
-	} else if m.mode == ModeSearch {
+	case ModeSearch:
 		m.search, cmd = m.search.Update(msg)
 	}
 	return m, cmd
@@ -461,9 +456,9 @@ func paneCount(n *layout.Node) int {
 	}
 	return paneCount(n.First) + paneCount(n.Second)
 }
-func (m *Model) SetRatio() {
-	if m.Settings != nil {
-		r, e := m.Settings.LoadRatio()
+func (m *model) setRatio() {
+	if m.settings != nil {
+		r, e := m.settings.LoadRatio()
 		m.ratio = r
 		if e != nil {
 			m.status = "Could not load settings: " + e.Error()
@@ -472,12 +467,12 @@ func (m *Model) SetRatio() {
 	m.resize()
 }
 
-func (m *Model) confirmArchive(confirmed bool) tea.Cmd {
+func (m *model) confirmArchive(confirmed bool) tea.Cmd {
 	m.setMode(ModeList)
 	if !confirmed {
 		return nil
 	}
 	m.busy = true
 	preview := m.preview
-	return func() tea.Msg { return finished{m.Service.ArchiveConfirmed(context.Background(), preview)} }
+	return func() tea.Msg { return finished{m.service.ArchiveConfirmed(context.Background(), preview)} }
 }

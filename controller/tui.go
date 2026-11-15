@@ -32,12 +32,11 @@ func (c *Controller) tuiCommand() *cobra.Command {
 		}
 		s.ManagerID = manager
 		s.MutationError = host.CheckCapabilities(cmd.Context())
-		m := tui.New(s, host.Focus)
-		m.Settings, err = do.Invoke[*service.SettingsService](c.injector)
+		settings, err := do.Invoke[*service.SettingsService](c.injector)
 		if err != nil {
 			return err
 		}
-		m.SetRatio()
+		m := tui.NewUI(s, host.Focus, settings)
 		_, err = tea.NewProgram(m, tea.WithMouseCellMotion(), tea.WithAltScreen(), tea.WithContext(cmd.Context())).Run()
 		return err
 	}}

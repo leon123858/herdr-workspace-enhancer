@@ -19,7 +19,7 @@ type geometry struct {
 	wide       bool
 }
 
-func (m Model) geometry() geometry {
+func (m model) geometry() geometry {
 	h := max(3, m.height-5)
 	if m.width >= 80 {
 		ratio := m.ratio
@@ -32,15 +32,15 @@ func (m Model) geometry() geometry {
 	top := max(4, h/3)
 	return geometry{list: rect{0, 2, m.width, top}, note: rect{0, 2 + top, m.width, max(3, h-top)}}
 }
-func (m *Model) resize() {
+func (m *model) resize() {
 	g := m.geometry()
 	m.editor.SetWidth(max(1, g.note.w-2))
 	m.editor.SetHeight(max(1, g.note.h-3))
 	m.search.Width = max(1, g.list.w-4)
 	m.ensureVisible()
 }
-func (m Model) listHeight() int { return max(1, m.geometry().list.h-4) }
-func (m *Model) ensureVisible() {
+func (m model) listHeight() int { return max(1, m.geometry().list.h-4) }
+func (m *model) ensureVisible() {
 	count := len(m.visible())
 	m.cursor = max(0, min(m.cursor, max(0, count-1)))
 	if m.cursor < m.listOffset {
@@ -74,7 +74,8 @@ func box(title string, lines []string, r rect, focused bool) string {
 	out = append(out, style.Render("└"+strings.Repeat("─", w)+"┘"))
 	return strings.Join(out, "\n")
 }
-func (m Model) View() string {
+
+func (m model) View() string {
 	g := m.geometry()
 	list := []string{"Filter: " + m.filter.String() + " [f]", m.search.View()}
 	rows := m.visible()

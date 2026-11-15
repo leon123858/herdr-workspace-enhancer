@@ -2,7 +2,7 @@ package tui
 
 import tea "github.com/charmbracelet/bubbletea"
 
-func (m Model) handleMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
+func (m model) handleMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 	g := m.geometry()
 	press := v.Action == tea.MouseActionPress && v.Button == tea.MouseButtonLeft
 	if m.busy {
@@ -41,8 +41,8 @@ func (m Model) handleMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.resize()
 		if v.Action == tea.MouseActionRelease {
 			m.dragging = false
-			if m.Settings != nil {
-				if err := m.Settings.SaveRatio(m.ratio); err != nil {
+			if m.settings != nil {
+				if err := m.settings.SaveRatio(m.ratio); err != nil {
 					m.status = "Layout changed, but settings were not saved: " + err.Error()
 				} else {
 					m.status = "Layout saved"

@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-func key(m Model, k tea.KeyMsg) Model { next, _ := m.Update(k); return next.(Model) }
+func key(m model, k tea.KeyMsg) model { next, _ := m.Update(k); return next.(model) }
 func runeKey(s string) tea.KeyMsg     { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 func TestNoteEditingAndUnsavedPrompt(t *testing.T) {
 	store, e := state.Open(t.TempDir(), "test")
@@ -20,7 +20,7 @@ func TestNoteEditingAndUnsavedPrompt(t *testing.T) {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	m := New(&workspace.Service{Store: store}, func(context.Context, string) error { return nil })
+	m := NewUI(&workspace.Service{Store: store}, func(context.Context, string) error { return nil }, nil).(model)
 	m.records = []state.Record{{ID: "one", Label: "workspace", Status: domain.WorkspaceArchived}}
 	m = key(m, runeKey("e"))
 	if m.mode != ModeEdit {
@@ -54,7 +54,7 @@ func TestNoteEditingAndUnsavedPrompt(t *testing.T) {
 	}
 }
 func TestFilterAndSearch(t *testing.T) {
-	m := New(nil, nil)
+	m := NewUI(nil, nil, nil).(model)
 	m.records = []state.Record{{Label: "Alpha", Status: domain.WorkspaceActive}, {Label: "Beta", Status: domain.WorkspaceArchived}}
 	m = key(m, runeKey("f"))
 	if len(m.visible()) != 1 || m.visible()[0].Label != "Alpha" {
@@ -84,7 +84,7 @@ func TestLongNoteRoundTrip(t *testing.T) {
 	if _, e = store.Save("long", text); e != nil {
 		t.Fatal(e)
 	}
-	m := New(&workspace.Service{Store: store}, nil)
+	m := NewUI(&workspace.Service{Store: store}, nil, nil).(model)
 	m.records = []state.Record{{ID: "long", Status: domain.WorkspaceArchived}}
 	m = key(m, runeKey("e"))
 	if m.editor.Value() != text {
@@ -102,7 +102,7 @@ func TestLongNoteRoundTrip(t *testing.T) {
 func TestAsyncBlinkForwarding(t *testing.T) {
 	for _, mode := range []Mode{ModeEdit, ModeSearch} {
 		t.Run(string(mode), func(t *testing.T) {
-			m := New(nil, nil)
+			m := NewUI(nil, nil, nil).(model)
 			m.mode = mode
 			if mode == ModeEdit {
 				m.editor.Focus()
@@ -118,11 +118,11 @@ func TestAsyncBlinkForwarding(t *testing.T) {
 }
 
 func TestEventUpdatesPreserveSelectionAndEditor(t *testing.T) {
-	m := New(nil, nil)
+	m := NewUI(nil, nil, nil).(model)
 	m.records = []state.Record{{ID: "a", Status: domain.WorkspaceActive}, {ID: "b", Status: domain.WorkspaceActive}}
 	m.cursor = 1
 	next, cmd := m.Update(storedRows{records: []state.Record{{ID: "b", Label: "renamed", Status: domain.WorkspaceActive}}})
-	m = next.(Model)
+	m = next.(model)
 	if cmd == nil || m.cursor != 0 || len(m.records) != 1 || m.records[0].Label != "renamed" {
 		t.Fatal(m.records, m.cursor)
 	}
@@ -131,13 +131,13 @@ func TestEventUpdatesPreserveSelectionAndEditor(t *testing.T) {
 	m.noteLoaded = true
 	m.editor.SetValue("unsaved note")
 	next, cmd = m.Update(storedRows{})
-	m = next.(Model)
+	m = next.(model)
 	if cmd == nil || m.mode != ModeEdit || m.editor.Value() != "unsaved note" || len(m.records) != 0 {
 		t.Fatal("background refresh interrupted editing")
 	}
 	m.mode = ModeConfirmArchive
 	next, _ = m.Update(storedRows{})
-	if next.(Model).mode != ModeConfirmArchive || len(next.(Model).records) != 0 {
+	if next.(model).mode != ModeConfirmArchive || len(next.(model).records) != 0 {
 		t.Fatal("confirmation changed")
 	}
 }
@@ -149,13 +149,13 @@ func TestFinishedReadsDBAndKeepsErrorOnPoll(t *testing.T) {
 	}
 	defer store.Close()
 	// A nil Host makes any accidental post-action Herdr sync fail immediately.
-	m := New(&workspace.Service{Store: store}, nil)
+	m := NewUI(&workspace.Service{Store: store}, nil, nil).(model)
 	next, cmd := m.Update(finished{err: fmt.Errorf("close refused")})
-	m = next.(Model)
+	m = next.(model)
 	next, _ = m.Update(cmd())
-	m = next.(Model)
+	m = next.(model)
 	next, _ = m.Update(storedRows{})
-	m = next.(Model)
+	m = next.(model)
 	if m.status != "close refused" {
 		t.Fatal(m.status)
 	}
@@ -164,8 +164,8 @@ func TestFinishedReadsDBAndKeepsErrorOnPoll(t *testing.T) {
 		t.Fatal("archived in-progress workspace")
 	}
 	next, cmd = m.Update(finished{})
-	if !strings.Contains(next.(Model).status, "waiting for sync") {
-		t.Fatal(next.(Model).status)
+	if !strings.Contains(next.(model).status, "waiting for sync") {
+		t.Fatal(next.(model).status)
 	}
 	if cmd == nil {
 		t.Fatal("missing database refresh")

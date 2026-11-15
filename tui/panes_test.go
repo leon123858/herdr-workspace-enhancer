@@ -14,7 +14,7 @@ import (
 	textarea "herdr-workspace-enhancer/tui/noteeditor"
 )
 
-func fixture(t *testing.T) (Model, *state.Store) {
+func fixture(t *testing.T) (model, *state.Store) {
 	t.Helper()
 	s, e := state.Open(t.TempDir(), "test")
 	if e != nil {
@@ -26,15 +26,15 @@ func fixture(t *testing.T) (Model, *state.Store) {
 			t.Fatal(e)
 		}
 	}
-	m := New(&workspace.Service{Store: s}, func(context.Context, string) error { return nil })
+	m := NewUI(&workspace.Service{Store: s}, func(context.Context, string) error { return nil }, nil).(model)
 	m.updateRows([]state.Record{{ID: "one", HostID: "h1", Label: "First", Status: domain.WorkspaceActive}, {ID: "two", Label: "Second", Status: domain.WorkspaceArchived}})
 	return m, s
 }
-func mouse(m Model, x, y int, b tea.MouseButton, a tea.MouseAction) Model {
+func mouse(m model, x, y int, b tea.MouseButton, a tea.MouseAction) model {
 	v, _ := m.Update(tea.MouseMsg{X: x, Y: y, Button: b, Action: a})
-	return v.(Model)
+	return v.(model)
 }
-func click(m Model, x, y int) Model {
+func click(m model, x, y int) model {
 	m = mouse(m, x, y, tea.MouseButtonLeft, tea.MouseActionPress)
 	return mouse(m, x, y, tea.MouseButtonLeft, tea.MouseActionRelease)
 }
@@ -92,7 +92,7 @@ func TestDirtyGuardsAndEditorKeys(t *testing.T) {
 				msg = runeKey(k)
 			}
 			n, cmd := m.Update(msg)
-			m = n.(Model)
+			m = n.(model)
 			if m.mode != ModeConfirmUnsaved || cmd != nil {
 				t.Fatal("unguarded", k, m.mode)
 			}
@@ -119,7 +119,7 @@ func TestDirtyGuardsAndEditorKeys(t *testing.T) {
 	}
 	m = key(m, runeKey("q"))
 	n, cmd := m.Update(runeKey("s"))
-	m = n.(Model)
+	m = n.(model)
 	if cmd == nil {
 		t.Fatal("save did not resume quit")
 	}
@@ -174,7 +174,7 @@ func (s failingStore) Save(id string, text string) (state.Note, error) {
 }
 func TestNoteFailuresAndBackgroundUpdates(t *testing.T) {
 	m, s := fixture(t)
-	m.Service.Store = failingStore{Store: s, loadErr: errors.New("unreadable")}
+	m.service.Store = failingStore{Store: s, loadErr: errors.New("unreadable")}
 	m.updateRows(m.records)
 	if m.noteLoaded || !strings.Contains(m.status, "Could not load") {
 		t.Fatal("load failure hidden")
@@ -183,18 +183,18 @@ func TestNoteFailuresAndBackgroundUpdates(t *testing.T) {
 	if m.mode == ModeEdit {
 		t.Fatal("editing unreadable note")
 	}
-	m.Service.Store = s
+	m.service.Store = s
 	m.syncNote(true)
 	m.editor.SetValue("draft")
-	m.Service.Store = failingStore{Store: s, saveErr: errors.New("read only")}
+	m.service.Store = failingStore{Store: s, saveErr: errors.New("read only")}
 	m = key(m, tea.KeyMsg{Type: tea.KeyDown})
 	m = key(m, runeKey("s"))
 	if m.editor.Value() != "draft" || m.cursor != 0 {
 		t.Fatal("write failure lost draft")
 	}
-	m.Service.Store = s
+	m.service.Store = s
 	n, _ := m.Update(storedRows{records: []state.Record{{ID: "two", Label: "Second", Status: domain.WorkspaceArchived}}})
-	m = n.(Model)
+	m = n.(model)
 	if m.editingID != "one" || m.editor.Value() != "draft" || len(m.records) != 1 {
 		t.Fatal("removed workspace lost draft")
 	}
@@ -220,7 +220,7 @@ func TestResponsiveLayoutAndMouseControls(t *testing.T) {
 		t.Run(string(rune(width)), func(t *testing.T) {
 			m, _ := fixture(t)
 			n, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 32})
-			m = n.(Model)
+			m = n.(model)
 			view := m.View()
 			if len(strings.Split(view, "\n")) > 32 {
 				t.Fatal("frame overflow")
@@ -283,7 +283,7 @@ func (s *settingsMemory) SaveRatio(r float64) error   { s.writes++; s.ratio = r;
 func TestDividerPersistsOnlyOnReleaseAndResizePreservesPreference(t *testing.T) {
 	m, _ := fixture(t)
 	settings := &settingsMemory{ratio: .35}
-	m.Settings = &workspace.SettingsService{Repository: settings}
+	m.settings = &workspace.SettingsService{Repository: settings}
 	m.editor.SetValue("draft")
 	g := m.geometry()
 	m = mouse(m, g.split, 5, tea.MouseButtonLeft, tea.MouseActionPress)
@@ -297,12 +297,12 @@ func TestDividerPersistsOnlyOnReleaseAndResizePreservesPreference(t *testing.T) 
 	}
 	ratio := m.ratio
 	n, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
-	m = n.(Model)
+	m = n.(model)
 	if m.geometry().wide || m.ratio != ratio {
 		t.Fatal("resize replaced preference")
 	}
 	n, _ = m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
-	m = n.(Model)
+	m = n.(model)
 	if !m.geometry().wide || m.ratio != ratio {
 		t.Fatal("wide restore failed")
 	}
@@ -327,7 +327,7 @@ func TestListMouseScrollAndClickUsesOffset(t *testing.T) {
 	id := m.visible()[m.listOffset].ID
 	for i := 0; i < 3; i++ {
 		next, _ := m.Update(storedRows{records: append([]state.Record(nil), m.records...)})
-		m = next.(Model)
+		m = next.(model)
 		if m.listOffset != 3 || m.cursor != 0 {
 			t.Fatal("background polling moved the viewport or selection", m.listOffset, m.cursor)
 		}
@@ -352,7 +352,7 @@ func TestBackgroundUpdatesClampScrollOffsetAndKeyboardRevealsSelection(t *testin
 	}
 	// A shorter result must clamp the viewport, without snapping to row zero.
 	next, _ := m.Update(storedRows{records: m.records[:m.listHeight()+4]})
-	m = next.(Model)
+	m = next.(model)
 	if m.listOffset != 4 || m.cursor != 0 {
 		t.Fatal("updated viewport was not clamped independently", m.listOffset, m.cursor)
 	}
@@ -361,7 +361,7 @@ func TestBackgroundUpdatesClampScrollOffsetAndKeyboardRevealsSelection(t *testin
 		t.Fatal("keyboard navigation did not reveal selection", m.listOffset, m.cursor)
 	}
 	next, _ = m.Update(storedRows{})
-	m = next.(Model)
+	m = next.(model)
 	if m.listOffset != 0 || m.cursor != 0 {
 		t.Fatal("empty list retained invalid viewport", m.listOffset, m.cursor)
 	}
@@ -397,12 +397,12 @@ func TestSearchEmptyStateAndClickFilter(t *testing.T) {
 func TestSaveResumesWorkspaceFocusAndArchivePreview(t *testing.T) {
 	m, s := fixture(t)
 	focused := ""
-	m.Focus = func(_ context.Context, id string) error { focused = id; return nil }
+	m.focus = func(_ context.Context, id string) error { focused = id; return nil }
 	m.editor.SetValue("draft")
 	n, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = n.(Model)
+	m = n.(model)
 	n, cmd := m.Update(runeKey("s"))
-	m = n.(Model)
+	m = n.(model)
 	if cmd == nil {
 		t.Fatal("focus did not resume")
 	}
@@ -414,12 +414,12 @@ func TestSaveResumesWorkspaceFocusAndArchivePreview(t *testing.T) {
 		t.Fatal("focused before saving")
 	}
 	n, _ = m.Update(finished{})
-	m = n.(Model)
-	m.Service.MutationError = errors.New("archive unavailable")
+	m = n.(model)
+	m.service.MutationError = errors.New("archive unavailable")
 	m.editor.SetValue("next draft")
 	m = key(m, runeKey("a"))
 	n, cmd = m.Update(runeKey("s"))
-	m = n.(Model)
+	m = n.(model)
 	if cmd == nil {
 		t.Fatal("archive preview did not resume")
 	}
@@ -432,7 +432,7 @@ func TestNoteMouseSelectionCoordinatesAcrossLayouts(t *testing.T) {
 	for _, width := range []int{60, 100} {
 		m, s := fixture(t)
 		n, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
-		m = n.(Model)
+		m = n.(model)
 		g := m.geometry()
 		m = click(m, g.note.x+1, g.note.y+1)
 		m.editor.SetValue("中文abc")
@@ -464,14 +464,14 @@ func TestSelectionReleaseCopiesAndCtrlCStillQuits(t *testing.T) {
 		}
 		g := m.geometry()
 		n, _ := m.Update(tea.MouseMsg{X: g.note.x + 1, Y: g.note.y + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
-		m = n.(Model)
+		m = n.(model)
 		n, cmd := m.Update(tea.MouseMsg{X: g.note.x + 5, Y: g.note.y + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
-		m = n.(Model)
+		m = n.(model)
 		if cmd == nil || m.mode != ModeEdit || m.selecting {
 			t.Fatal("note selection did not return copy command")
 		}
 		n, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-		m = n.(Model)
+		m = n.(model)
 		if dirty {
 			if m.mode != ModeConfirmUnsaved || cmd != nil || m.pending.kind != ActionQuit {
 				t.Fatal("Ctrl+C did not guard unsaved exit")
@@ -491,40 +491,40 @@ func TestRightClickAndCopyNotification(t *testing.T) {
 	for _, width := range []int{60, 100} {
 		m, _ := fixture(t)
 		n, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
-		m = n.(Model)
+		m = n.(model)
 		m.editor.ShowLineNumbers = false
 		m.editor.Prompt = ""
 		m.resize()
 		g := m.geometry()
 		m = mouse(m, g.note.x+1, g.note.y+1, tea.MouseButtonLeft, tea.MouseActionPress)
 		n, _ = m.Update(tea.MouseMsg{X: g.note.x + 5, Y: g.note.y + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
-		m = n.(Model)
+		m = n.(model)
 		before := m.editor.Value()
 		n, cmd := m.Update(tea.MouseMsg{X: g.note.x + 1, Y: g.note.y + 1, Button: tea.MouseButtonRight, Action: tea.MouseActionPress})
-		m = n.(Model)
+		m = n.(model)
 		if cmd == nil {
 			t.Fatal("TUI did not route right-click to editor")
 		}
 		n, cmd = m.Update(textarea.ClipboardCopied{})
-		m = n.(Model)
+		m = n.(model)
 		if cmd == nil || !strings.Contains(m.View(), "Clipboard") || !strings.Contains(m.View(), "Selection copied") {
 			t.Fatal("missing copy feedback")
 		}
 		first := m.copyNoticeID
 		n, _ = m.Update(textarea.ClipboardCopied{})
-		m = n.(Model)
+		m = n.(model)
 		n, _ = m.Update(dismissCopyNotice{first})
-		m = n.(Model)
+		m = n.(model)
 		if m.copyNotice == "" {
 			t.Fatal("older timer dismissed newer notification")
 		}
 		n, _ = m.Update(dismissCopyNotice{m.copyNoticeID})
-		m = n.(Model)
+		m = n.(model)
 		if m.copyNotice != "" || m.editor.Value() != before || m.dirty() {
 			t.Fatal("notification altered note or did not expire")
 		}
 		n, cmd = m.Update(textarea.ClipboardCopyFailed{Err: errors.New("terminal closed")})
-		m = n.(Model)
+		m = n.(model)
 		if cmd == nil || !strings.Contains(m.View(), "Could not copy") || !strings.Contains(m.status, "terminal closed") {
 			t.Fatal("copy failure hidden")
 		}
