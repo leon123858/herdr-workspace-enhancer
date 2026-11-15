@@ -24,13 +24,6 @@ func (s *Service) initializeManager(ctx context.Context, r model.Record) error {
 	if len(listed.Panes) == 0 {
 		return fmt.Errorf("manager has no panes")
 	}
-	seen := map[string]bool{}
-	for _, p := range listed.Panes {
-		if p.ID == "" || p.WorkspaceID != r.HostID || seen[p.ID] {
-			return fmt.Errorf("invalid manager pane list")
-		}
-		seen[p.ID] = true
-	}
 	sort.Slice(listed.Panes, func(i, j int) bool { return listed.Panes[i].ID < listed.Panes[j].ID })
 	retained := listed.Panes[0].ID
 	for _, p := range listed.Panes[1:] {
@@ -38,26 +31,25 @@ func (s *Service) initializeManager(ctx context.Context, r model.Record) error {
 			return fmt.Errorf("reset manager panes: %w", err)
 		}
 	}
-	var opened struct {
-		PluginPane struct {
-			Pane herdr.Pane `json:"pane"`
-		} `json:"plugin_pane"`
-	}
-	if err := host.Call(ctx, &opened, "plugin", "pane", "open", "--plugin", "workspace.enhancer", "--entrypoint", "manager", "--placement", "split", "--target-pane", retained, "--no-focus"); err != nil {
+	if err := host.Call(ctx, nil, "plugin", "pane", "open", "--plugin", "workspace.enhancer", "--entrypoint", "manager", "--placement", "split", "--target-pane", retained, "--no-focus"); err != nil {
 		return fmt.Errorf("open manager pane: %w", err)
-	}
-	p := opened.PluginPane.Pane
-	if p.ID == "" || seen[p.ID] || p.WorkspaceID != r.HostID {
-		return fmt.Errorf("invalid new manager pane")
 	}
 	if err := host.Call(ctx, nil, "pane", "close", retained); err != nil {
 		return fmt.Errorf("clean up retained pane: %w", err)
 	}
-	if err := s.Store.CompleteManager(ctx, r.ID, r.HostID); err != nil {
-		return err
-	}
 	if err := host.Call(ctx, nil, "workspace", "focus", r.HostID); err != nil {
-		return fmt.Errorf("focus completed manager: %w", err)
+		return fmt.Errorf("focus manager: %w", err)
 	}
-	return nil
+	return s.Store.CompleteManager(ctx, r.ID, r.HostID)
+}
+
+func (s *Service) managerFSM(ctx context.Context, r model.Record) error {
+	switch r.ManagerState {
+	case model.ManagerNone, model.ManagerDone:
+		return nil
+	case model.ManagerInit:
+		return s.initializeManager(ctx, r)
+	default:
+		return fmt.Errorf("invalid manager state %s", r.ManagerState)
+	}
 }

@@ -18,6 +18,7 @@ var keys = struct {
 	Search         keybind.Binding
 	Refresh        keybind.Binding
 	Archive        keybind.Binding
+	Delete         keybind.Binding
 	Activate       keybind.Binding
 	ConfirmArchive keybind.Binding
 	ConfirmSave    keybind.Binding
@@ -36,6 +37,7 @@ var keys = struct {
 	Search:         keybind.NewBinding(keybind.WithKeys("/")),
 	Refresh:        keybind.NewBinding(keybind.WithKeys("r")),
 	Archive:        keybind.NewBinding(keybind.WithKeys("a")),
+	Delete:         keybind.NewBinding(keybind.WithKeys("d")),
 	Activate:       keybind.NewBinding(keybind.WithKeys("enter")),
 	ConfirmArchive: keybind.NewBinding(keybind.WithKeys("y")),
 	ConfirmSave:    keybind.NewBinding(keybind.WithKeys("s")),

@@ -59,3 +59,63 @@ func TestApplySyncAtomicAndPreservesLatestNote(t *testing.T) {
 		t.Fatal(r)
 	}
 }
+
+func TestCompleteRestoreConditionalWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  model.WorkspaceStatus
+		manager model.ManagerState
+		host    string
+		success bool
+	}{
+		{"valid", model.WorkspaceArchived, model.ManagerNone, "h", true},
+		{"wrong host", model.WorkspaceArchived, model.ManagerNone, "other", false},
+		{"active", model.WorkspaceActive, model.ManagerNone, "h", false},
+		{"manager", model.WorkspaceArchived, model.ManagerInit, "h", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testStore(t, t.TempDir())
+			put(t, s, Record{ID: "r", HostID: "h", Status: tc.status, ManagerState: tc.manager, Label: "label", Note: "note", Snapshot: &model.Snapshot{Label: "saved"}})
+			err := s.CompleteRestore(context.Background(), "r", tc.host)
+			if (err == nil) != tc.success {
+				t.Fatal(err)
+			}
+			r, _ := s.Get("r")
+			want := tc.status
+			if tc.success {
+				want = model.WorkspaceActive
+			}
+			if r.Status != want || r.Note != "note" || r.Label != "label" || r.Snapshot.Label != "saved" || r.HostID != "h" {
+				t.Fatal(r)
+			}
+		})
+	}
+}
+
+func TestDeleteArchivedConditional(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  model.WorkspaceStatus
+		manager model.ManagerState
+		host    string
+		ok      bool
+	}{
+		{"archived", model.WorkspaceArchived, model.ManagerNone, "h", true},
+		{"active", model.WorkspaceActive, model.ManagerNone, "h", false},
+		{"manager", model.WorkspaceArchived, model.ManagerInit, "h", false},
+		{"stale host", model.WorkspaceArchived, model.ManagerNone, "old", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testStore(t, t.TempDir())
+			put(t, s, Record{ID: "r", HostID: "h", Status: tc.status, ManagerState: tc.manager, Note: "note"})
+			err := s.DeleteArchived(context.Background(), "r", tc.host)
+			if (err == nil) != tc.ok {
+				t.Fatal(err)
+			}
+			rows, err := s.All(context.Background())
+			if err != nil || tc.ok && len(rows) != 0 || !tc.ok && (len(rows) != 1 || rows[0].Note != "note") {
+				t.Fatal(rows, err)
+			}
+		})
+	}
+}

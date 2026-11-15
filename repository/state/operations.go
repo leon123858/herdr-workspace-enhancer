@@ -74,3 +74,34 @@ func (s *Store) CompleteManager(ctx context.Context, id, host string) error {
 	}
 	return nil
 }
+
+func (s *Store) NonClosed(ctx context.Context) ([]Record, error) {
+	return allRecords(s.db.WithContext(ctx).Where("status <> ?", model.WorkspaceClosed))
+}
+func (s *Store) FindHost(ctx context.Context, host string) (Record, error) {
+	var r workspaceRow
+	err := s.db.WithContext(ctx).Where("host_id = ?", host).Take(&r).Error
+	return r.record(), err
+}
+func (s *Store) CompleteRestore(ctx context.Context, id, host string) error {
+	result := s.db.WithContext(ctx).Model(&workspaceRow{}).Where("id = ? AND host_id = ? AND status = ? AND manager_state = ?", id, host, model.WorkspaceArchived, model.ManagerNone).Update("status", model.WorkspaceActive)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("workspace changed before restore completion")
+	}
+	return nil
+}
+
+// DeleteArchived is conditional so a stale request cannot delete an active record.
+func (s *Store) DeleteArchived(ctx context.Context, id, host string) error {
+	result := s.db.WithContext(ctx).Where("id = ? AND host_id = ? AND status = ? AND manager_state = ?", id, host, model.WorkspaceArchived, model.ManagerNone).Delete(&workspaceRow{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("workspace changed before deletion")
+	}
+	return nil
+}

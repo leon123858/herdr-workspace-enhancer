@@ -8,7 +8,7 @@ func (m model) handleMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.busy {
 		return m, nil
 	}
-	if m.mode == ModeConfirmUnsaved || m.mode == ModeConfirmArchive {
+	if m.mode == ModeConfirmDelete || m.mode == ModeConfirmUnsaved || m.mode == ModeConfirmArchive {
 		if press && v.Y == g.note.y+g.note.h-2 {
 			x := v.X - g.note.x - 1
 			if m.mode == ModeConfirmUnsaved {
@@ -24,11 +24,21 @@ func (m model) handleMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 			if x >= 0 && x < 9 {
-				cmd := m.confirmArchive(true)
+				var cmd tea.Cmd
+				if m.mode == ModeConfirmDelete {
+					cmd = m.confirmDelete(true)
+				} else {
+					cmd = m.confirmArchive(true)
+				}
 				return m, cmd
 			}
 			if x >= 10 && x < 18 {
-				cmd := m.confirmArchive(false)
+				var cmd tea.Cmd
+				if m.mode == ModeConfirmDelete {
+					cmd = m.confirmDelete(false)
+				} else {
+					cmd = m.confirmArchive(false)
+				}
 				return m, cmd
 			}
 		}

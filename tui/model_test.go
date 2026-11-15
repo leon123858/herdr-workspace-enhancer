@@ -171,3 +171,36 @@ func TestFinishedReadsDBAndKeepsErrorOnPoll(t *testing.T) {
 		t.Fatal("missing database refresh")
 	}
 }
+
+func TestDeleteArchivedConfirmation(t *testing.T) {
+	m := NewUI(nil, nil, nil).(model)
+	m.width, m.height = 100, 30
+	m.records = []state.Record{{ID: "r", Label: "broken", Status: domain.WorkspaceArchived, ManagerState: domain.ManagerNone}}
+	m = key(m, runeKey("d"))
+	if m.mode != ModeConfirmDelete || m.deleteTarget.ID != "r" {
+		t.Fatal(m.mode)
+	}
+	if !strings.Contains(m.View(), "Permanently removes") {
+		t.Fatal(m.View())
+	}
+	next, _ := m.Update(storedRows{records: []state.Record{}})
+	m = next.(model)
+	if len(m.records) != 1 {
+		t.Fatal("poll changed confirmation target")
+	}
+	m = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != ModeList || m.busy {
+		t.Fatal(m.mode, m.busy)
+	}
+	m = key(m, runeKey("d"))
+	next, cmd := m.Update(runeKey("y"))
+	if !next.(model).busy || cmd == nil {
+		t.Fatal("confirmation did not schedule deletion")
+	}
+	m.records[0].Status = domain.WorkspaceActive
+	m.mode = ModeList
+	m = key(m, runeKey("d"))
+	if m.mode != ModeList {
+		t.Fatal("active record deletion allowed")
+	}
+}

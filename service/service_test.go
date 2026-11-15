@@ -117,8 +117,12 @@ func TestSyncLifecycleAndExplicitArchive(t *testing.T) {
 	}
 	host.live = []herdr.Workspace{{ID: "w1", Label: "Returns"}}
 	rows, e = s.Refresh(ctx)
-	if e != nil || rows[0].Status != model.WorkspaceActive || rows[0].Note != "keep note" {
-		t.Fatal(rows, e)
+	if e == nil {
+		t.Fatal("empty snapshot accepted", rows)
+	}
+	r, e = store.Get(id)
+	if e != nil || r.Status != model.WorkspaceArchived || r.Note != "keep note" {
+		t.Fatal(r, e)
 	}
 }
 func TestSyncInvalidScanNeverChangesState(t *testing.T) {
@@ -289,21 +293,15 @@ func TestArchiveConfirmedRejectsChanges(t *testing.T) {
 	}
 }
 func TestSyncRebindsLostCreationWithoutLosingNote(t *testing.T) {
-	store := serviceStore(t)
-	saveRecord(t, store, model.Record{ID: "one", HostID: "old", Label: "Original", Status: model.WorkspaceArchived, Note: "note"})
-	host := &fakeHost{live: []herdr.Workspace{{ID: "new", Label: restorePrefix + "one"}}}
-	s := Service{Store: store, Host: host}
-	rows, e := s.Refresh(context.Background())
-	if e != nil || len(rows) != 1 || rows[0].ID != "one" || rows[0].HostID != "new" || rows[0].Note != "note" {
-		t.Fatal(rows, e)
+	s, h := restoreFixture(t)
+	h.live = []herdr.Workspace{{ID: "new", Label: restorePrefix + "record"}, {ID: "other", Label: restorePrefix + "record"}}
+	if _, err := s.Refresh(context.Background()); err == nil || h.calls != 0 {
+		t.Fatal("ambiguity modified host", err, h.calls)
 	}
-	host.live = append(host.live, herdr.Workspace{ID: "other", Label: restorePrefix + "one"})
-	if _, e = s.Refresh(context.Background()); e == nil {
-		t.Fatal("ambiguous ID binding accepted")
-	}
-	r, _ := store.Get("one")
-	if r.HostID != "new" {
-		t.Fatal("failed sync partly committed", r)
+	h.live = h.live[:1]
+	rows, err := s.Refresh(context.Background())
+	if err != nil || len(rows) != 1 || rows[0].ID != "record" || rows[0].Note != "keep note" {
+		t.Fatal(rows, err)
 	}
 }
 

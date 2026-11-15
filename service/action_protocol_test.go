@@ -105,7 +105,7 @@ func TestSyncBindingBeforeRenameAndRetryCleanup(t *testing.T) {
 		t.Fatal("expected rename failure")
 	}
 	r, _ := real.Get("record")
-	if r.HostID != "new" || r.Status != model.WorkspaceActive || h.live[0].Label != restorePrefix+"record" {
+	if r.HostID != "new" || r.Status != model.WorkspaceArchived || h.live[0].Label != restorePrefix+"record" {
 		t.Fatal(r, h.live)
 	}
 	h.failAt = 0
@@ -177,14 +177,14 @@ func TestRestoreRetryBeforeEventAndNoCreationFailure(t *testing.T) {
 	}
 	calls := h.calls
 	// No event has run: the next action must discover and bind the existing result.
-	if err := s.Restore(context.Background(), "record"); err == nil {
-		t.Fatal("expected already-exists result")
+	if err := s.Restore(context.Background(), "record"); err != nil {
+		t.Fatal(err)
 	}
-	if h.calls != calls+1 || len(h.live) != 1 {
+	if h.calls != calls || len(h.live) != 1 {
 		t.Fatal("duplicate creation", h.calls, h.live)
 	}
 	r, _ = s.Store.Get("record")
-	if r.Status != model.WorkspaceActive || r.HostID != "new" {
+	if r.Status != model.WorkspaceArchived || r.HostID != "old" {
 		t.Fatal(r)
 	}
 }

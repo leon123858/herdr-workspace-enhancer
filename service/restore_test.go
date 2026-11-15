@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"herdr-workspace-enhancer/model"
@@ -13,13 +15,21 @@ import (
 )
 
 type restoreHost struct {
+	mu sync.Mutex
 	fakeHost
 	calls, failAt int
 	lostCreate    bool
 	layoutHook    func() error
 }
 
+func (h *restoreHost) Workspaces(ctx context.Context) ([]herdr.Workspace, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.fakeHost.Workspaces(ctx)
+}
 func (h *restoreHost) Call(_ context.Context, dst any, args ...string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.calls++
 	if h.calls == h.failAt {
 		return errors.New("injected host failure")
@@ -37,6 +47,8 @@ func (h *restoreHost) Call(_ context.Context, dst any, args ...string) error {
 			return errors.New("lost creation reply")
 		}
 		raw = `{"workspace":{"workspace_id":"new"},"tab":{"tab_id":"t1"},"root_pane":{"pane_id":"p1"}}`
+	case "tab list":
+		raw = `{"tabs":[{"tab_id":"old-tab"}]}`
 	case "pane split":
 		raw = `{"pane":{"pane_id":"p2"}}`
 	case "tab create":
@@ -61,47 +73,46 @@ func restoreFixture(t *testing.T) (*Service, *restoreHost) {
 }
 func TestRestoreKeepsArchivedUntilSync(t *testing.T) {
 	s, h := restoreFixture(t)
-	h.layoutHook = func() error {
-		r, e := s.Store.Get("record")
-		if e != nil {
-			return e
-		}
-		if r.HostID != "old" || r.Status != model.WorkspaceArchived {
-			return errors.New("restore wrote before sync")
-		}
-		_, e = s.Store.Save("record", "edited during restore")
-		return e
-	}
 	if e := s.Restore(context.Background(), "record"); e != nil {
 		t.Fatal(e)
 	}
 	r, e := s.Store.Get("record")
-	if e != nil || r.Status != model.WorkspaceArchived || r.HostID != "old" || r.Note != "edited during restore" || h.calls != 5 {
+	if e != nil || r.Status != model.WorkspaceArchived || r.HostID != "old" || h.calls != 1 {
 		t.Fatal(r, e, h.calls)
 	}
-	h.layoutHook = nil
+	h.layoutHook = func() error { _, err := s.Store.Save("record", "edited during restore"); return err }
 	rows, e := s.Refresh(context.Background())
 	if e != nil || len(rows) != 1 || rows[0].ID != "record" || rows[0].Note != "edited during restore" {
 		t.Fatal(rows, e)
 	}
 }
-func TestPartialRestoreRemainsActiveWithoutAutomaticReplay(t *testing.T) {
-	s, h := restoreFixture(t)
-	h.failAt = 3
-	if e := s.Restore(context.Background(), "record"); e == nil {
-		t.Fatal("expected failure")
-	}
-	r, _ := s.Store.Get("record")
-	if r.Status != model.WorkspaceActive || r.HostID != "new" || r.Snapshot == nil {
-		t.Fatal(r)
-	}
-	calls := h.calls
-	if e := s.Restore(context.Background(), "record"); e == nil || h.calls != calls {
-		t.Fatal("partial restoration replayed", e)
-	}
-	rows, e := s.Refresh(context.Background())
-	if e != nil || len(rows) != 1 || rows[0].ID != "record" {
-		t.Fatal(rows, e)
+func TestPartialRestoreRetries(t *testing.T) {
+	for failAt := 2; failAt <= 7; failAt++ {
+		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
+			s, h := restoreFixture(t)
+			if err := s.Restore(context.Background(), "record"); err != nil {
+				t.Fatal(err)
+			}
+			h.failAt = failAt
+			if _, err := s.Refresh(context.Background()); err == nil {
+				t.Fatal("expected failure")
+			}
+			r, _ := s.Store.Get("record")
+			if r.Status != model.WorkspaceArchived {
+				t.Fatal(r)
+			}
+			if _, err := s.Refresh(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			r, _ = s.Store.Get("record")
+			if r.Status != model.WorkspaceActive {
+				t.Fatal(r)
+			}
+			calls := h.calls
+			if _, err := s.Refresh(context.Background()); err != nil || h.calls != calls {
+				t.Fatal(err, h.calls)
+			}
+		})
 	}
 }
 func TestLostCreationReplyRebindsInsteadOfDuplicating(t *testing.T) {
@@ -117,7 +128,8 @@ func TestLostCreationReplyRebindsInsteadOfDuplicating(t *testing.T) {
 	if r.HostID != "new" || r.Status != model.WorkspaceActive {
 		t.Fatal(r)
 	}
-	if e := s.Restore(context.Background(), "record"); e == nil || h.calls != 2 {
+	calls := h.calls
+	if e := s.Restore(context.Background(), "record"); e == nil || h.calls != calls {
 		t.Fatal("creation repeated", e, h.calls)
 	}
 }
@@ -139,5 +151,69 @@ func TestSyncRepairsFailedNewIDCommit(t *testing.T) {
 	rows, e := s.Refresh(context.Background())
 	if e != nil || len(rows) != 1 || rows[0].ID != "record" || rows[0].HostID != "new" || rows[0].Note != "keep note" {
 		t.Fatal(rows, e)
+	}
+}
+
+type restoreCommitFailure struct {
+	Store
+	fail bool
+}
+
+func (s *restoreCommitFailure) CompleteRestore(ctx context.Context, id, host string) error {
+	if s.fail {
+		s.fail = false
+		return errors.New("commit failed")
+	}
+	return s.Store.CompleteRestore(ctx, id, host)
+}
+func TestRestoreCommitFailureRetriesAfterRename(t *testing.T) {
+	s, h := restoreFixture(t)
+	s.Store = &restoreCommitFailure{Store: s.Store, fail: true}
+	if err := s.Restore(context.Background(), "record"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Refresh(context.Background()); err == nil {
+		t.Fatal("expected commit failure")
+	}
+	r, _ := s.Store.Get("record")
+	if r.Status != model.WorkspaceArchived || h.live[0].Label != "project" {
+		t.Fatal(r, h.live)
+	}
+	if _, err := s.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestInvalidRestoreDoesNotBlockOtherItems(t *testing.T) {
+	s, h := restoreFixture(t)
+	r, _ := s.Store.Get("record")
+	r.Snapshot = nil
+	if err := s.Store.ApplySync(context.Background(), []model.Record{r}); err != nil {
+		t.Fatal(err)
+	}
+	h.live = []herdr.Workspace{{ID: "old"}, {ID: "unrelated", Label: "other"}}
+	if _, err := s.Refresh(context.Background()); err == nil {
+		t.Fatal("expected invalid snapshot")
+	}
+	if h.calls != 0 {
+		t.Fatal("invalid snapshot mutated host")
+	}
+	rows, err := s.Store.List()
+	if err != nil || len(rows) != 2 {
+		t.Fatal(rows, err)
+	}
+}
+func TestConcurrentRestoreCreatesOnce(t *testing.T) {
+	s, h := restoreFixture(t)
+	done := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() { done <- s.Restore(context.Background(), "record") }()
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if h.calls != 1 || len(h.live) != 1 {
+		t.Fatal(h.calls, h.live)
 	}
 }

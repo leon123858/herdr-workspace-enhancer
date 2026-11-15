@@ -115,6 +115,10 @@ func (m model) View() string {
 	case ModeConfirmUnsaved:
 		note = []string{"Unsaved changes.", "Save or discard before continuing.", "s Save · d Discard · Esc Cancel"}
 		buttons = "[Save] [Discard] [Cancel]"
+	case ModeConfirmDelete:
+		title = "Delete archived workspace"
+		note = []string{"Delete " + clip(m.deleteTarget.Label, max(1, g.note.w-12)) + "?", "Permanently removes its note and saved layout.", "Any remaining workspace will be closed.", "y Confirm · any other key Cancel"}
+		buttons = "[Confirm] [Cancel]"
 	case ModeConfirmArchive:
 		text := "Archiving closes all tabs, panes, and foreground processes. Restoring recreates shells only; running processes are not restored."
 		note = strings.Split(lipgloss.NewStyle().Width(max(1, g.note.w-2)).Render(text), "\n")
@@ -128,7 +132,7 @@ func (m model) View() string {
 	body := make([]string, innerH)
 	copy(body[:max(0, innerH-1)], note)
 	body[innerH-1] = buttons
-	if m.copyNotice != "" && m.mode != ModeConfirmUnsaved && m.mode != ModeConfirmArchive {
+	if m.copyNotice != "" && m.mode != ModeConfirmUnsaved && m.mode != ModeConfirmDelete && m.mode != ModeConfirmArchive {
 		if innerH >= 4 {
 			notice := box("Clipboard", []string{m.copyNotice}, rect{w: g.note.w - 2, h: 3}, true)
 			copy(body[innerH-4:innerH-1], strings.Split(notice, "\n"))
@@ -137,7 +141,7 @@ func (m model) View() string {
 		}
 	}
 	left := box("Workspaces", list, g.list, m.mode == ModeList || m.mode == ModeSearch)
-	right := box(title, body, g.note, m.mode == ModeEdit || m.mode == ModeConfirmUnsaved || m.mode == ModeConfirmArchive)
+	right := box(title, body, g.note, m.mode == ModeEdit || m.mode == ModeConfirmUnsaved || m.mode == ModeConfirmArchive || m.mode == ModeConfirmDelete)
 	bodyView := left + "\n" + right
 	if g.wide {
 		bodyView = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat("│\n", max(0, g.list.h-1))+"│", right)
@@ -146,7 +150,7 @@ func (m model) View() string {
 	if m.busy {
 		status = "Working… " + status
 	}
-	out := "Herdr Workspace Enhancer\n\n" + bodyView + "\n" + clip("Tab Switch pane · Ctrl+S Save · Esc Focus list", m.width) + "\n" + clip("↑↓ Select · f Filter · / Search · a Archive · Enter Restore/focus · q Quit", m.width) + "\n" + clip(status, m.width)
+	out := "Herdr Workspace Enhancer\n\n" + bodyView + "\n" + clip("Tab Switch pane · Ctrl+S Save · Esc Focus list", m.width) + "\n" + clip("↑↓ Select · f Filter · / Search · a Archive · d Delete archived · Enter Restore/focus · q Quit", m.width) + "\n" + clip(status, m.width)
 	// Tiny terminals still receive a bounded frame.
 	lines := strings.Split(out, "\n")
 	if len(lines) > m.height {

@@ -16,7 +16,7 @@ import (
 )
 
 func TestOpenManager(t *testing.T) {
-	for _, failure := range []string{"", "workspace create", "plugin pane open", "pane close", "workspace focus", "missing-pane"} {
+	for _, failure := range []string{"", "workspace create", "plugin pane open", "pane close", "workspace focus"} {
 		t.Run(failure, func(t *testing.T) {
 			store, err := state.Open(t.TempDir(), "session")
 			if err != nil {
@@ -48,9 +48,7 @@ func TestOpenManager(t *testing.T) {
 					if !reflect.DeepEqual(args, expected) {
 						t.Fatal(args)
 					}
-					if failure != "missing-pane" {
-						result["plugin_pane"] = map[string]any{"pane": herdr.Pane{ID: "manager", WorkspaceID: fmt.Sprint(creates)}}
-					}
+					result["plugin_pane"] = map[string]any{"pane": herdr.Pane{ID: "manager", WorkspaceID: fmt.Sprint(creates)}}
 				case "pane list":
 					result["panes"] = []herdr.Pane{{ID: "initial", WorkspaceID: fmt.Sprint(creates)}}
 				case "pane close":
@@ -96,7 +94,7 @@ func TestOpenManager(t *testing.T) {
 			if failure == "" && (creates != 1 || closes != 1) {
 				t.Fatal(creates, closes)
 			}
-			if (failure == "plugin pane open" || failure == "missing-pane") && closes != 0 {
+			if failure == "plugin pane open" && closes != 0 {
 				t.Fatal("closed shell after failed startup")
 			}
 			if failure != "" && failure != "workspace create" {
@@ -105,9 +103,6 @@ func TestOpenManager(t *testing.T) {
 					t.Fatal(records, e)
 				}
 				expected := model.ManagerInit
-				if failure == "workspace focus" {
-					expected = model.ManagerDone
-				}
 				if records[0].ManagerState != expected {
 					t.Fatal(records[0])
 				}

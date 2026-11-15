@@ -26,6 +26,7 @@ type previewed struct {
 	err     error
 }
 type finished struct{ err error }
+type deleted struct{ err error }
 type pollState struct{}
 type dismissCopyNotice struct{ id uint64 }
 type storedRows struct {
@@ -58,6 +59,7 @@ type model struct {
 	note                      state.Note
 	noteLoaded                bool
 	preview                   workspace.ArchivePreview
+	deleteTarget              state.Record
 	status                    string
 	copyNotice                string
 	copyNoticeID              uint64
@@ -222,6 +224,13 @@ func (m *model) execute(a action) tea.Cmd {
 	case ActionRefresh:
 		m.busy = true
 		return m.refresh()
+	case ActionDelete:
+		r, ok := m.selected()
+		if ok && r.Status == state.WorkspaceArchived && r.ManagerState == state.ManagerNone {
+			m.deleteTarget = r
+			return m.setMode(ModeConfirmDelete)
+		}
+		m.status = "Only archived workspaces can be deleted"
 	case ActionArchive:
 		r, ok := m.selected()
 		if ok && r.Status == state.WorkspaceActive {
@@ -314,7 +323,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 		return m, nil
 	case pollState:
-		if m.busy || m.mode == ModeConfirmArchive || m.mode == ModeConfirmUnsaved || m.service == nil {
+		if m.busy || m.mode == ModeConfirmDelete || m.mode == ModeConfirmArchive || m.mode == ModeConfirmUnsaved || m.service == nil {
 			return m, pollLater()
 		}
 		return m, func() tea.Msg {
@@ -322,7 +331,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return storedRows{r, e}
 		}
 	case storedRows:
-		if !m.busy && m.mode != ModeConfirmArchive && m.mode != ModeConfirmUnsaved {
+		if !m.busy && m.mode != ModeConfirmDelete && m.mode != ModeConfirmArchive && m.mode != ModeConfirmUnsaved {
 			if v.err != nil {
 				m.status = v.err.Error()
 			} else {
@@ -347,6 +356,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setMode(ModeConfirmArchive)
 		}
 		return m, nil
+	case deleted:
+		m.busy = false
+		if v.err != nil {
+			m.status = v.err.Error()
+		} else {
+			m.status = "Archived workspace deleted"
+		}
+		return m, func() tea.Msg { r, e := m.service.StoredRows(); return refreshed{r, e} }
 	case finished:
 		m.busy = false
 		if v.err != nil {
@@ -368,6 +385,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.busy {
 			return m, nil
+		}
+		if m.mode == ModeConfirmDelete {
+			cmd := m.confirmDelete(keybind.Matches(v, keys.ConfirmArchive))
+			return m, cmd
 		}
 		if m.mode == ModeConfirmArchive {
 			cmd := m.confirmArchive(keybind.Matches(v, keys.ConfirmArchive))
@@ -430,6 +451,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case keybind.Matches(v, keys.Refresh):
 			cmd := m.request(action{kind: ActionRefresh})
 			return m, cmd
+		case keybind.Matches(v, keys.Delete):
+			cmd := m.request(action{kind: ActionDelete})
+			return m, cmd
 		case keybind.Matches(v, keys.Archive):
 			cmd := m.request(action{kind: ActionArchive})
 			return m, cmd
@@ -475,4 +499,14 @@ func (m *model) confirmArchive(confirmed bool) tea.Cmd {
 	m.busy = true
 	preview := m.preview
 	return func() tea.Msg { return finished{m.service.ArchiveConfirmed(context.Background(), preview)} }
+}
+
+func (m *model) confirmDelete(confirmed bool) tea.Cmd {
+	m.setMode(ModeList)
+	if !confirmed {
+		return nil
+	}
+	m.busy = true
+	id := m.deleteTarget.ID
+	return func() tea.Msg { return deleted{m.service.DeleteArchived(context.Background(), id)} }
 }

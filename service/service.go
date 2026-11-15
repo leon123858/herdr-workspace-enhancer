@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"time"
 
 	"herdr-workspace-enhancer/model"
@@ -35,7 +34,7 @@ const managerPrefix = "enhancer-manager-"
 // Refresh accepts only a successful complete scan. Herdr's session must already
 // be restored by the caller: an actual successful empty list means no workspaces.
 // The session lock excludes our open/archive/restore operations while scanning;
-// one SQL statement atomically applies all computed synchronization results.
+// each item commits its own transitions without holding a SQL transaction.
 func (s *Service) Refresh(ctx context.Context) ([]model.Record, error) {
 	unlock, err := s.Store.WaitLock(ctx, "session")
 	if err != nil {
@@ -53,114 +52,26 @@ func (s *Service) refreshLocked(ctx context.Context) ([]model.Record, error) {
 	if live == nil {
 		return nil, fmt.Errorf("Herdr workspace scan is incomplete")
 	}
-	seen := map[string]bool{}
-	for _, w := range live {
-		if w.ID == "" || seen[w.ID] {
-			return nil, fmt.Errorf("invalid Herdr workspace identity")
-		}
-		seen[w.ID] = true
-	}
-	records, err := s.Store.All(ctx)
+	items, err := s.syncItems(ctx, live)
 	if err != nil {
 		return nil, err
 	}
-	var renames []model.Record
-	err = func() error {
-		results := make([]model.Record, 0, len(records)+len(live))
-		byHost := map[string]model.Record{}
-		byID := map[string]model.Record{}
-		for _, r := range records {
-			if r.ManagerState == "" {
-				r.ManagerState = model.ManagerNone
-			}
-			byID[r.ID] = r
-			if r.HostID != "" {
-				byHost[r.HostID] = r
-			}
+	var failures []error
+	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, err)
+			break
 		}
-		for _, w := range live {
-			r, found := byHost[w.ID]
-			if !found {
-				// A creation response can be lost before its new ID is persisted. The
-				// temporary label ties it back to the original note without a journal.
-				prefix := restorePrefix
-				if strings.HasPrefix(w.Label, managerPrefix) {
-					prefix = managerPrefix
-				}
-				if candidate, ok := byID[strings.TrimPrefix(w.Label, prefix)]; ok && strings.HasPrefix(w.Label, prefix) && (candidate.ManagerState != model.ManagerNone) == (prefix == managerPrefix) {
-					r = candidate
-					found = true
-				}
-			}
-			if !found {
-				id, e := newID()
-				if e != nil {
-					return e
-				}
-				r = model.Record{ID: id, ManagerState: model.ManagerNone}
-			}
-			// One record must never be rebound to multiple live workspaces.
-			if previous, exists := byID[r.ID]; exists && previous.HostID != "" && previous.HostID != w.ID && seen[previous.HostID] {
-				return fmt.Errorf("ambiguous workspace binding for %s", r.ID)
-			}
-			r.HostID = w.ID
-			r.Status = model.WorkspaceActive
-			temporaryLabel := w.Label == restorePrefix+r.ID || w.Label == managerPrefix+r.ID
-			if !temporaryLabel {
-				r.Label = w.Label
-			}
-			if r.Label == "" {
-				r.Label = w.Label
-			}
-			if temporaryLabel && w.Label != r.Label {
-				renames = append(renames, r)
-			}
-			results = append(results, r)
-			byID[r.ID] = r
-		}
-		for _, original := range records {
-			r := byID[original.ID]
-			if !seen[r.HostID] {
-				switch r.Status {
-				case model.WorkspaceActive:
-					r.Status = model.WorkspaceClosed
-				case model.WorkspaceArchiving:
-					r.Status = model.WorkspaceArchived
-				}
-				results = append(results, r)
-			}
-		}
-		return s.Store.ApplySync(ctx, results)
-	}()
-	if err != nil {
-		return nil, err
-	}
-	var completionErrors []error
-	for _, r := range renames {
-		caller, ok := s.Host.(Caller)
-		if !ok {
-			return nil, fmt.Errorf("host does not support temporary workspace name cleanup")
-		}
-		if err := caller.Call(ctx, nil, "workspace", "rename", r.HostID, r.Label); err != nil {
-			completionErrors = append(completionErrors, fmt.Errorf("clean up workspace name: %w", err))
+		if err := s.workspaceFSM(ctx, item); err != nil {
+			failures = append(failures, err)
 		}
 	}
-	records, err = s.Store.All(ctx)
-	if err != nil {
-		return nil, errors.Join(append(completionErrors, err)...)
-	}
-	for _, r := range records {
-		if r.Status == model.WorkspaceActive && r.ManagerState == model.ManagerInit {
-			if err := s.initializeManager(ctx, r); err != nil {
-				completionErrors = append(completionErrors, fmt.Errorf("manager %s: %w", r.ID, err))
-			}
-		}
-	}
-	if err := errors.Join(completionErrors...); err != nil {
+	if err := errors.Join(failures...); err != nil {
 		return nil, err
 	}
 	return s.Store.List()
 }
+
 func (s *Service) StoredRows() ([]model.Record, error)      { return s.Store.List() }
 func (s *Service) Load(id string) (model.Note, error)       { return s.Store.Load(id) }
 func (s *Service) Save(id, text string) (model.Note, error) { return s.Store.Save(id, text) }

@@ -9,6 +9,7 @@ const (
 	ModeSearch         Mode = "search"
 	ModeConfirmUnsaved Mode = "dirty"
 	ModeConfirmArchive Mode = "archive"
+	ModeConfirmDelete  Mode = "delete"
 )
 
 type ActionKind string
@@ -22,6 +23,7 @@ const (
 	ActionDiscard  ActionKind = "discard"
 	ActionRefresh  ActionKind = "refresh"
 	ActionArchive  ActionKind = "archive"
+	ActionDelete   ActionKind = "delete"
 	ActionActivate ActionKind = "activate"
 )
 

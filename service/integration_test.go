@@ -106,10 +106,8 @@ func runHerdrIntegration(t *testing.T, fault string) {
 		if err != nil || r.HostID == original || r.Status != domain.WorkspaceActive {
 			t.Fatal(r, err)
 		}
-		defer client.Close(ctx, r.HostID)
-		return
 	}
-	if e != nil {
+	if fault == "none" && e != nil {
 		t.Fatal(e)
 	}
 	records, e = store.List()

@@ -32,6 +32,10 @@ type Record struct {
 
 type WorkspaceStore interface {
 	All(context.Context) ([]Record, error)
+	NonClosed(context.Context) ([]Record, error)
+	FindHost(context.Context, string) (Record, error)
+	CompleteRestore(context.Context, string, string) error
+	DeleteArchived(context.Context, string, string) error
 	ApplySync(context.Context, []Record) error
 	ArchiveIntent(context.Context, string, string, *Snapshot) error
 	CreateManager(context.Context, Record) error
