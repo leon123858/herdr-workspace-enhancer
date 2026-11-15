@@ -5,11 +5,65 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 	"herdr-workspace-enhancer/model"
 	"herdr-workspace-enhancer/repository/herdr"
 )
+
+// Refresh accepts only a successful complete scan. Herdr's session must already
+// be restored by the caller: an actual successful empty list means no workspaces.
+// The session lock excludes our open/archive/restore operations while scanning;
+// each item commits its own transitions without holding a SQL transaction.
+func (s *Service) Refresh(ctx context.Context) ([]model.Record, error) {
+	unlock, err := s.Store.WaitLock(ctx, "session")
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	return s.refreshLocked(ctx)
+}
+
+func (s *Service) refreshLocked(ctx context.Context) ([]model.Record, error) {
+	live, err := s.Host.Workspaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if live == nil {
+		return nil, fmt.Errorf("Herdr workspace scan is incomplete")
+	}
+	items, err := s.syncItems(ctx, live)
+	if err != nil {
+		return nil, err
+	}
+	var failures []error
+	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, err)
+			break
+		}
+		if err := s.workspaceFSM(ctx, item); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	if err := errors.Join(failures...); err != nil {
+		return nil, err
+	}
+	return s.Store.List()
+}
+
+// Failure repair is a separate logical operation with its own bounded context.
+// The caller already owns the session lock, so it must not acquire it again.
+func (s *Service) repairLocked(original error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := s.refreshLocked(ctx)
+	if err != nil {
+		return errors.Join(original, fmt.Errorf("repair sync failed: %w", err))
+	}
+	return original
+}
 
 type syncItem struct {
 	record         *model.Record
