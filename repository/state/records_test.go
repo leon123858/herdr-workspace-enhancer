@@ -48,7 +48,7 @@ func TestMetadataPreservesNoteAndRejectsInvalidSnapshot(t *testing.T) {
 }
 func TestListExcludesManagersAndClosedButKeepsTheirNotes(t *testing.T) {
 	s := testStore(t, t.TempDir())
-	for _, r := range []Record{{ID: "active", Status: model.WorkspaceActive}, {ID: "archived", Status: model.WorkspaceArchived}, {ID: "closed", Status: model.WorkspaceClosed, Note: "keep"}, {ID: "manager", HostID: "manager-host", Status: model.WorkspaceActive, IsManager: true}} {
+	for _, r := range []Record{{ID: "active", Status: model.WorkspaceActive}, {ID: "archived", Status: model.WorkspaceArchived}, {ID: "closed", Status: model.WorkspaceClosed, Note: "keep"}, {ID: "manager", HostID: "manager-host", Status: model.WorkspaceActive, ManagerState: model.ManagerDone}} {
 		put(t, s, r)
 	}
 	rows, e := s.List()

@@ -44,6 +44,16 @@ with tempfile.TemporaryDirectory(prefix="enhancer-plugin-test-") as directory:
                     time.sleep(.1)
                 else:
                     raise AssertionError("Action did not complete")
+            for _ in range(100):
+                databases = list(Path(directory).rglob("state.sqlite"))
+                if databases:
+                    with sqlite3.connect(databases[0]) as db:
+                        done = db.execute("SELECT count(*) FROM workspaces WHERE manager_state = 'DONE'").fetchone()[0]
+                    if done == 2:
+                        break
+                time.sleep(.1)
+            else:
+                raise AssertionError("Manager initialization did not complete")
             workspaces = call("workspace", "list")["workspaces"]
             assert len(workspaces) == 2 and len({w["workspace_id"] for w in workspaces}) == 2, workspaces
             managers = []
@@ -77,7 +87,7 @@ with tempfile.TemporaryDirectory(prefix="enhancer-plugin-test-") as directory:
             assert len(databases) == 1, databases
             with sqlite3.connect(databases[0]) as db:
                 db.row_factory = sqlite3.Row
-                records = [dict(r) for r in db.execute('SELECT * FROM workspaces WHERE is_manager = 0 ORDER BY rowid')]
+                records = [dict(r) for r in db.execute('SELECT * FROM workspaces WHERE manager_state = "NONE" ORDER BY rowid')]
             assert len(records) == 1 and records[0]["host_id"] == project["workspace_id"] and records[0]["status"] == "closed", records
             logs = call("plugin", "log", "list", "--plugin", "workspace.enhancer")["logs"]
             assert not any(x["status"] == "failed" for x in logs), logs

@@ -53,7 +53,7 @@ func (s *Service) Restore(ctx context.Context, id string) (result error) {
 	if err != nil {
 		return err
 	}
-	if r.IsManager {
+	if r.ManagerState != model.ManagerNone {
 		return fmt.Errorf("cannot restore manager workspace")
 	}
 	if r.Status != model.WorkspaceArchived {

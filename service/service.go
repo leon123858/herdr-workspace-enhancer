@@ -70,6 +70,9 @@ func (s *Service) refreshLocked(ctx context.Context) ([]model.Record, error) {
 		byHost := map[string]model.Record{}
 		byID := map[string]model.Record{}
 		for _, r := range records {
+			if r.ManagerState == "" {
+				r.ManagerState = model.ManagerNone
+			}
 			byID[r.ID] = r
 			if r.HostID != "" {
 				byHost[r.HostID] = r
@@ -84,7 +87,7 @@ func (s *Service) refreshLocked(ctx context.Context) ([]model.Record, error) {
 				if strings.HasPrefix(w.Label, managerPrefix) {
 					prefix = managerPrefix
 				}
-				if candidate, ok := byID[strings.TrimPrefix(w.Label, prefix)]; ok && strings.HasPrefix(w.Label, prefix) && candidate.IsManager == (prefix == managerPrefix) {
+				if candidate, ok := byID[strings.TrimPrefix(w.Label, prefix)]; ok && strings.HasPrefix(w.Label, prefix) && (candidate.ManagerState != model.ManagerNone) == (prefix == managerPrefix) {
 					r = candidate
 					found = true
 				}
@@ -94,7 +97,7 @@ func (s *Service) refreshLocked(ctx context.Context) ([]model.Record, error) {
 				if e != nil {
 					return e
 				}
-				r = model.Record{ID: id}
+				r = model.Record{ID: id, ManagerState: model.ManagerNone}
 			}
 			// One record must never be rebound to multiple live workspaces.
 			if previous, exists := byID[r.ID]; exists && previous.HostID != "" && previous.HostID != w.ID && seen[previous.HostID] {
@@ -108,9 +111,6 @@ func (s *Service) refreshLocked(ctx context.Context) ([]model.Record, error) {
 			}
 			if r.Label == "" {
 				r.Label = w.Label
-			}
-			if w.ID == s.ManagerID {
-				r.IsManager = true
 			}
 			if temporaryLabel && w.Label != r.Label {
 				renames = append(renames, r)
@@ -135,14 +135,29 @@ func (s *Service) refreshLocked(ctx context.Context) ([]model.Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	var completionErrors []error
 	for _, r := range renames {
 		caller, ok := s.Host.(Caller)
 		if !ok {
 			return nil, fmt.Errorf("host does not support temporary workspace name cleanup")
 		}
 		if err := caller.Call(ctx, nil, "workspace", "rename", r.HostID, r.Label); err != nil {
-			return nil, fmt.Errorf("clean up workspace name: %w", err)
+			completionErrors = append(completionErrors, fmt.Errorf("clean up workspace name: %w", err))
 		}
+	}
+	records, err = s.Store.All(ctx)
+	if err != nil {
+		return nil, errors.Join(append(completionErrors, err)...)
+	}
+	for _, r := range records {
+		if r.Status == model.WorkspaceActive && r.ManagerState == model.ManagerInit {
+			if err := s.initializeManager(ctx, r); err != nil {
+				completionErrors = append(completionErrors, fmt.Errorf("manager %s: %w", r.ID, err))
+			}
+		}
+	}
+	if err := errors.Join(completionErrors...); err != nil {
+		return nil, err
 	}
 	return s.Store.List()
 }
@@ -169,7 +184,7 @@ func (s *Service) archive(ctx context.Context, id string, preview *ArchivePrevie
 	if err != nil {
 		return err
 	}
-	if r.IsManager || r.HostID == s.ManagerID && s.ManagerID != "" {
+	if r.ManagerState != model.ManagerNone || r.HostID == s.ManagerID && s.ManagerID != "" {
 		return fmt.Errorf("cannot archive manager workspace")
 	}
 	if r.Status != model.WorkspaceActive {

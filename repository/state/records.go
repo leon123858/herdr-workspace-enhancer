@@ -24,10 +24,10 @@ func (s *Store) Get(id string) (Record, error) {
 	return r.record(), err
 }
 func (s *Store) List() ([]Record, error) {
-	return allRecords(s.db.Where("is_manager = ? AND status <> ?", false, model.WorkspaceClosed))
+	return allRecords(s.db.Where("manager_state = ? AND status <> ?", model.ManagerNone, model.WorkspaceClosed))
 }
 func (s *Store) IsManager(hostID string) (bool, error) {
 	var count int64
-	err := s.db.Model(&workspaceRow{}).Where("host_id = ? AND is_manager = ?", hostID, true).Count(&count).Error
+	err := s.db.Model(&workspaceRow{}).Where("host_id = ? AND manager_state <> ?", hostID, model.ManagerNone).Count(&count).Error
 	return count > 0, err
 }

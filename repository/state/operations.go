@@ -16,7 +16,7 @@ func (s *Store) All(ctx context.Context) ([]Record, error) {
 func (s *Store) ArchiveIntent(ctx context.Context, id, host string, snapshot *model.Snapshot) error {
 	value := row(Record{Status: model.WorkspaceArchiving, Snapshot: snapshot})
 	result := s.db.WithContext(ctx).Model(&workspaceRow{}).
-		Where("id = ? AND host_id = ? AND status = ? AND is_manager = ?", id, host, model.WorkspaceActive, false).
+		Where("id = ? AND host_id = ? AND status = ? AND manager_state = ?", id, host, model.WorkspaceActive, model.ManagerNone).
 		Select("status", "snapshot").Updates(&value)
 	if result.Error != nil {
 		return result.Error
@@ -28,7 +28,7 @@ func (s *Store) ArchiveIntent(ctx context.Context, id, host string, snapshot *mo
 }
 
 func (s *Store) CreateManager(ctx context.Context, r Record) error {
-	if r.ID == "" || !r.IsManager || r.Status != model.WorkspaceClosed || r.HostID != "" {
+	if r.ID == "" || r.ManagerState != model.ManagerInit || r.Status != model.WorkspaceClosed || r.HostID != "" {
 		return fmt.Errorf("invalid manager intent")
 	}
 	value := row(r)
@@ -53,8 +53,24 @@ func (s *Store) ApplySync(ctx context.Context, records []Record) error {
 		default:
 			return fmt.Errorf("invalid workspace status %q", r.Status)
 		}
+		switch r.ManagerState {
+		case "", model.ManagerNone, model.ManagerInit, model.ManagerDone:
+		default:
+			return fmt.Errorf("invalid manager state %q", r.ManagerState)
+		}
 		values = append(values, row(r))
 	}
 	return s.db.WithContext(ctx).Session(&gorm.Session{SkipDefaultTransaction: true, CreateBatchSize: len(values)}).
-		Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoUpdates: clause.AssignmentColumns([]string{"host_id", "label", "status", "is_manager", "snapshot"})}).Create(&values).Error
+		Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoUpdates: clause.AssignmentColumns([]string{"host_id", "label", "status", "manager_state", "snapshot"})}).Create(&values).Error
+}
+
+func (s *Store) CompleteManager(ctx context.Context, id, host string) error {
+	result := s.db.WithContext(ctx).Model(&workspaceRow{}).Where("id = ? AND host_id = ? AND status = ? AND manager_state = ?", id, host, model.WorkspaceActive, model.ManagerInit).Update("manager_state", model.ManagerDone)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("manager changed before completion")
+	}
+	return nil
 }

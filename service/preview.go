@@ -18,7 +18,7 @@ func (s *Service) Preview(ctx context.Context, id string) (ArchivePreview, error
 	if err != nil {
 		return ArchivePreview{}, err
 	}
-	if r.IsManager || r.HostID == s.ManagerID && s.ManagerID != "" {
+	if r.ManagerState != model.ManagerNone || r.HostID == s.ManagerID && s.ManagerID != "" {
 		return ArchivePreview{}, fmt.Errorf("cannot archive manager")
 	}
 	if r.Status != model.WorkspaceActive {

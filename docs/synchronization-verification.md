@@ -42,3 +42,15 @@ Events remain non-durable; lost events require another event, startup, or manual
 refresh. A successful empty scan assumes session restoration has completed.
 An archive timeout followed by a late close can intentionally result in closed,
 not archived. Sync never replays layout creation or retries closing a workspace.
+
+## Manager initialization
+
+Manager identity uses NONE, INIT and DONE instead of a boolean. Open persists
+closed + INIT and creates a workspace; successful Open relies on the create event.
+Refresh binds the workspace before initializing every active + INIT manager under
+the session lock. Initialization retains one pane, closes the others, opens a
+plugin pane without focus, closes the retained pane, commits DONE, then focuses.
+Failures before DONE leave INIT for a full retry, including replacing a TUI from
+a previous partial attempt. Focus failures leave DONE. DONE never rebuilds panes
+or focuses on subsequent syncs. Missing closed + INIT workspaces remain unchanged.
+No migration from the unreleased boolean schema is provided.

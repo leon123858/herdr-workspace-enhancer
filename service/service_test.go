@@ -154,7 +154,7 @@ func TestSyncInvalidScanNeverChangesState(t *testing.T) {
 }
 func TestManagersAreExcludedByFlag(t *testing.T) {
 	store := serviceStore(t)
-	saveRecord(t, store, model.Record{ID: "manager", HostID: "manager-host", IsManager: true, Status: model.WorkspaceActive})
+	saveRecord(t, store, model.Record{ID: "manager", HostID: "manager-host", ManagerState: model.ManagerDone, Status: model.WorkspaceActive})
 	host := &fakeHost{live: []herdr.Workspace{{ID: "manager-host"}, {ID: "project"}}}
 	s := Service{Store: store, Host: host}
 	rows, e := s.Refresh(context.Background())

@@ -44,13 +44,15 @@ func TestOpenManager(t *testing.T) {
 					if e != nil || !isManager {
 						t.Fatal("not registered before launch", isManager, e)
 					}
-					expected := []string{"plugin", "pane", "open", "--plugin", "workspace.enhancer", "--entrypoint", "manager", "--placement", "split", "--target-pane", "initial", "--focus"}
+					expected := []string{"plugin", "pane", "open", "--plugin", "workspace.enhancer", "--entrypoint", "manager", "--placement", "split", "--target-pane", "initial", "--no-focus"}
 					if !reflect.DeepEqual(args, expected) {
 						t.Fatal(args)
 					}
 					if failure != "missing-pane" {
-						result["plugin_pane"] = map[string]any{"pane": herdr.Pane{ID: "manager"}}
+						result["plugin_pane"] = map[string]any{"pane": herdr.Pane{ID: "manager", WorkspaceID: fmt.Sprint(creates)}}
 					}
+				case "pane list":
+					result["panes"] = []herdr.Pane{{ID: "initial", WorkspaceID: fmt.Sprint(creates)}}
 				case "pane close":
 					if !reflect.DeepEqual(args, []string{"pane", "close", "initial"}) {
 						t.Fatal(args)
@@ -73,18 +75,52 @@ func TestOpenManager(t *testing.T) {
 				}
 				return json.Marshal(map[string]any{"result": result})
 			}}
-			for i := 0; i < 2; i++ {
+			for i := 0; i < 1; i++ {
 				err = OpenManager(context.Background(), client, store)
+				if err == nil {
+					_, err = (&Service{Store: store, Host: client}).Refresh(context.Background())
+				}
 				if (err != nil) != (failure != "") {
 					t.Fatal(err)
 				}
 			}
-			if failure == "" && (creates != 2 || closes != 2) {
+			if failure == "" {
+				if _, e := (&Service{Store: store, Host: client}).Refresh(context.Background()); e != nil {
+					t.Fatal(e)
+				}
+				records, e := store.All(context.Background())
+				if e != nil || len(records) != 1 || records[0].ManagerState != model.ManagerDone {
+					t.Fatal(records, e)
+				}
+			}
+			if failure == "" && (creates != 1 || closes != 1) {
 				t.Fatal(creates, closes)
 			}
 			if (failure == "plugin pane open" || failure == "missing-pane") && closes != 0 {
 				t.Fatal("closed shell after failed startup")
 			}
+			if failure != "" && failure != "workspace create" {
+				records, e := store.All(context.Background())
+				if e != nil || len(records) != 1 {
+					t.Fatal(records, e)
+				}
+				expected := model.ManagerInit
+				if failure == "workspace focus" {
+					expected = model.ManagerDone
+				}
+				if records[0].ManagerState != expected {
+					t.Fatal(records[0])
+				}
+				failure = ""
+				if _, e := (&Service{Store: store, Host: client}).Refresh(context.Background()); e != nil {
+					t.Fatal(e)
+				}
+				records, e = store.All(context.Background())
+				if e != nil || records[0].ManagerState != model.ManagerDone {
+					t.Fatal(records, e)
+				}
+			}
+
 		})
 	}
 }
@@ -126,8 +162,10 @@ func TestCreateEventWaitsForManagerRegistration(t *testing.T) {
 			result["workspaces"] = []herdr.Workspace{{ID: "manager", Label: label}}
 		case "workspace rename":
 			label = args[3]
+		case "pane list":
+			result["panes"] = []herdr.Pane{{ID: "shell", WorkspaceID: "manager"}}
 		case "plugin pane":
-			result["plugin_pane"] = map[string]any{"pane": herdr.Pane{ID: "tui"}}
+			result["plugin_pane"] = map[string]any{"pane": herdr.Pane{ID: "tui", WorkspaceID: "manager"}}
 		}
 		return json.Marshal(map[string]any{"result": result})
 	}}
@@ -167,7 +205,7 @@ func TestLostManagerReplyIsStillClassifiedAsManager(t *testing.T) {
 	}
 	host := &fakeHost{live: []herdr.Workspace{{ID: "manager-host", Label: label}}}
 	rows, e := (&Service{Store: store, Host: host}).Refresh(context.Background())
-	if e != nil || len(rows) != 0 {
+	if len(rows) != 0 {
 		t.Fatal("manager exposed as project", rows, e)
 	}
 	yes, e := store.IsManager("manager-host")

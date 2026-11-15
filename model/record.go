@@ -2,6 +2,14 @@ package model
 
 import "context"
 
+type ManagerState string
+
+const (
+	ManagerNone ManagerState = "NONE"
+	ManagerInit ManagerState = "INIT"
+	ManagerDone ManagerState = "DONE"
+)
+
 type WorkspaceStatus string
 
 const (
@@ -13,13 +21,13 @@ const (
 
 // Record keeps the same ID and note when restoration changes the Herdr ID.
 type Record struct {
-	ID        string          `json:"id"`
-	HostID    string          `json:"host_id"`
-	Label     string          `json:"label"`
-	Status    WorkspaceStatus `json:"status"`
-	Note      string          `json:"note"`
-	IsManager bool            `json:"is_manager"`
-	Snapshot  *Snapshot       `json:"snapshot,omitempty"`
+	ID           string          `json:"id"`
+	HostID       string          `json:"host_id"`
+	Label        string          `json:"label"`
+	Status       WorkspaceStatus `json:"status"`
+	Note         string          `json:"note"`
+	ManagerState ManagerState    `json:"manager_state"`
+	Snapshot     *Snapshot       `json:"snapshot,omitempty"`
 }
 
 type WorkspaceStore interface {
@@ -27,6 +35,7 @@ type WorkspaceStore interface {
 	ApplySync(context.Context, []Record) error
 	ArchiveIntent(context.Context, string, string, *Snapshot) error
 	CreateManager(context.Context, Record) error
+	CompleteManager(context.Context, string, string) error
 	Get(string) (Record, error)
 	List() ([]Record, error)
 	IsManager(string) (bool, error)
