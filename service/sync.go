@@ -281,6 +281,12 @@ func (s *Service) wsFSM(ctx context.Context, action wsAction, item *syncItem) (e
 			if action == noHost {
 				return nil
 			}
+			// Preserve identity before removing the temporary manager label.
+			if item.record.HostID != item.workspace.ID {
+				if err := commit(model.WorkspaceClosed); err != nil {
+					return err
+				}
+			}
 			if err := s.syncMetadata(ctx, item); err != nil {
 				return err
 			}

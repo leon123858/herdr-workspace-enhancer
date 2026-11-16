@@ -65,3 +65,54 @@ func TestClosedManagerResolution(t *testing.T) {
 		})
 	}
 }
+
+func TestClosedManagerBindingBeforeMetadata(t *testing.T) {
+	for _, failure := range []string{"binding", "rename", "activation"} {
+		t.Run(failure, func(t *testing.T) {
+			store := serviceStore(t)
+			saveRecord(t, store, model.Record{ID: "manager", Label: "Manager", Status: model.WorkspaceClosed, ManagerState: model.ManagerInit})
+			host := &restoreHost{fakeHost: fakeHost{live: []herdr.Workspace{{ID: "new", Label: managerPrefix + "manager"}}}}
+			wrapped := &failedCheckpointStore{Store: store}
+			switch failure {
+			case "binding":
+				wrapped.failAt = 1
+			case "rename":
+				host.failAt = 1
+			case "activation":
+				wrapped.failAt = 2
+			}
+			svc := Service{Store: wrapped, Host: host}
+			if _, err := svc.Refresh(context.Background()); err == nil {
+				t.Fatal("expected failure")
+			}
+			r, err := store.Get("manager")
+			if err != nil || r.Status != model.WorkspaceClosed {
+				t.Fatal(r, err)
+			}
+			if failure == "binding" {
+				if r.HostID != "" || host.calls != 0 {
+					t.Fatal("rename ran before binding", r, host.calls)
+				}
+			} else if r.HostID != "new" {
+				t.Fatal("binding was lost", r)
+			}
+			if failure == "activation" && host.live[0].Label != "Manager" {
+				t.Fatal("rename did not complete")
+			}
+			wrapped.failAt, host.failAt = 0, 0
+			// This fake has no panes: reaching manager initialization produces an error,
+			// but must leave the original manager active, without a duplicate record.
+			if _, err := svc.Refresh(context.Background()); err == nil {
+				t.Fatal("expected manager pane error")
+			}
+			r, err = store.Get("manager")
+			if err != nil || r.Status != model.WorkspaceActive || r.HostID != "new" || r.ManagerState != model.ManagerInit {
+				t.Fatal(r, err)
+			}
+			records, err := store.All(context.Background())
+			if err != nil || len(records) != 1 {
+				t.Fatal("identity lost", records, err)
+			}
+		})
+	}
+}
