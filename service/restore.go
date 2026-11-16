@@ -35,7 +35,8 @@ func first(n *layout.Node) *layout.Node {
 	return n
 }
 
-// Restore ensures the target exists. Refresh owns layout reconstruction.
+// Restore creates a target for event reconciliation, or retries reconciliation
+// immediately when a previous attempt already created the target.
 func (s *Service) Restore(ctx context.Context, id string) error {
 	if s.MutationError != nil {
 		return s.MutationError
@@ -73,7 +74,10 @@ func (s *Service) Restore(ctx context.Context, id string) error {
 		return fmt.Errorf("ambiguous restore candidates for %s", r.ID)
 	}
 	if count == 1 {
-		return nil
+		// The session lock is already held. A previous sync may have failed,
+		// so do not wait for a creation event that will not be emitted again.
+		_, err := s.refreshLocked(ctx)
+		return err
 	}
 	if err := validateRestore(r); err != nil {
 		return err

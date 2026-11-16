@@ -31,11 +31,11 @@ func TestRestoreRetryBeforeEventAndNoCreationFailure(t *testing.T) {
 	if err := s.Restore(context.Background(), "record"); err != nil {
 		t.Fatal(err)
 	}
-	if h.calls != calls || len(h.live) != 1 {
+	if h.calls <= calls || len(h.live) != 1 {
 		t.Fatal("duplicate creation", h.calls, h.live)
 	}
 	r, _ = s.Store.Get("record")
-	if r.Status != model.WorkspaceArchived || r.HostID != "old" {
+	if r.Status != model.WorkspaceActive || r.HostID != "new" {
 		t.Fatal(r)
 	}
 }
@@ -131,11 +131,11 @@ func TestPartialRestoreRetries(t *testing.T) {
 			if r.Status != model.WorkspaceArchived {
 				t.Fatal(r)
 			}
-			if _, err := s.Refresh(context.Background()); err != nil {
+			if err := s.Restore(context.Background(), "record"); err != nil {
 				t.Fatal(err)
 			}
 			r, _ = s.Store.Get("record")
-			if r.Status != model.WorkspaceActive {
+			if r.Status != model.WorkspaceActive || r.HostID != "new" || r.Note != "keep note" || len(h.live) != 1 {
 				t.Fatal(r)
 			}
 			calls := h.calls
@@ -227,7 +227,32 @@ func TestConcurrentRestoreCreatesOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if h.calls != 1 || len(h.live) != 1 {
+	r, err := s.Store.Get("record")
+	if err != nil || r.Status != model.WorkspaceActive || len(h.live) != 1 {
 		t.Fatal(h.calls, h.live)
+	}
+}
+
+func TestRestoreRetryReportsReconciliationFailure(t *testing.T) {
+	s, h := restoreFixture(t)
+	ctx := context.Background()
+	if err := s.Restore(ctx, "record"); err != nil {
+		t.Fatal(err)
+	}
+	h.failAt = h.calls + 1
+	if err := s.Restore(ctx, "record"); err == nil {
+		t.Fatal("retry hid reconciliation failure")
+	}
+	r, err := s.Store.Get("record")
+	if err != nil || r.Status != model.WorkspaceArchived || len(h.live) != 1 {
+		t.Fatal(r, err, h.live)
+	}
+	h.failAt = 0
+	if err := s.Restore(ctx, "record"); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.Store.Get("record")
+	if err != nil || r.Status != model.WorkspaceActive || len(h.live) != 1 {
+		t.Fatal(r, err, h.live)
 	}
 }
