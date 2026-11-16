@@ -37,9 +37,6 @@ func (s *Service) DeleteArchived(ctx context.Context, id string) error {
 	}
 	for _, item := range items {
 		record := item.record
-		if record == nil {
-			record = item.resolved
-		}
 		if record != nil && record.ID == id && item.workspace != nil {
 			if err := s.Host.Close(ctx, item.workspace.ID); err != nil {
 				return fmt.Errorf("close archived workspace: %w", err)
