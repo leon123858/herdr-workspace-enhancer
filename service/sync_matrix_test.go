@@ -27,7 +27,7 @@ func TestSyncFourStateMatrix(t *testing.T) {
 					t.Fatal(err)
 				}
 				want := status
-				if exists {
+				if exists && status != model.WorkspaceArchiving {
 					want = model.WorkspaceActive
 				} else if status == model.WorkspaceActive {
 					want = model.WorkspaceClosed

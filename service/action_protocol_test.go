@@ -53,7 +53,7 @@ func TestArchiveFailureAndDelayedClose(t *testing.T) {
 				t.Fatal("lost original failure")
 			}
 			r, _ := store.Get("r")
-			want := model.WorkspaceActive
+			want := model.WorkspaceArchiving
 			if absent {
 				want = model.WorkspaceArchived
 			}
@@ -65,7 +65,7 @@ func TestArchiveFailureAndDelayedClose(t *testing.T) {
 				t.Fatal(err)
 			}
 			r, _ = store.Get("r")
-			if !absent && r.Status != model.WorkspaceClosed {
+			if !absent && r.Status != model.WorkspaceArchived {
 				t.Fatal(r)
 			}
 		})
@@ -83,7 +83,7 @@ func TestRepairUsesIndependentContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, _ := store.Get("r")
-	if r.Status != model.WorkspaceActive {
+	if r.Status != model.WorkspaceArchiving {
 		t.Fatal(r)
 	}
 }

@@ -172,7 +172,7 @@ func TestManagersAreExcludedByFlag(t *testing.T) {
 		t.Fatal("manager preview allowed")
 	}
 }
-func TestArchiveCloseFailureIsReconciledActive(t *testing.T) {
+func TestArchiveCloseFailureRemainsArchiving(t *testing.T) {
 	store := serviceStore(t)
 	host := &fakeHost{store: store, live: []herdr.Workspace{{ID: "w1"}}, fail: true}
 	s := Service{Store: store, Host: host}
@@ -181,7 +181,7 @@ func TestArchiveCloseFailureIsReconciledActive(t *testing.T) {
 		t.Fatal("expected close failure")
 	}
 	r, e := store.Get(rows[0].ID)
-	if e != nil || r.Status != model.WorkspaceActive || r.Snapshot == nil {
+	if e != nil || r.Status != model.WorkspaceArchiving || r.Snapshot == nil {
 		t.Fatal(r, e)
 	}
 }
@@ -321,11 +321,15 @@ func TestSyncRepairsFailedArchiveReset(t *testing.T) {
 	if r.Status != model.WorkspaceArchiving {
 		t.Fatal(r)
 	}
+	host.fail = false
 	if _, e := s.Refresh(context.Background()); e != nil {
-		t.Fatal(e)
+		// Close succeeded but the injected DB commit failed; retry from noHost.
+		if _, err := s.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	r, _ = store.Get(id)
-	if r.Status != model.WorkspaceActive {
+	if r.Status != model.WorkspaceArchived {
 		t.Fatal("sync did not repair failed reset", r)
 	}
 }

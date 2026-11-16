@@ -45,7 +45,7 @@ func (s *Service) refreshLocked(ctx context.Context) ([]model.Record, error) {
 			failures = append(failures, err)
 			break
 		}
-		if err := s.workspaceFSM(ctx, item); err != nil {
+		if err := s.mainFSM(ctx, item); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -93,7 +93,7 @@ func (s *Service) syncItems(ctx context.Context, live []herdr.Workspace) ([]sync
 		warn(db.add(records[i].ID, records[i].HostID, &records[i]))
 	}
 
-	// use host ws try to bind record in db, 
+	// use host ws try to bind record in db,
 	// if not found, try to find record by label prefix
 	// so may have to key: host id or record id.
 	for _, e := range hosts.entries() {
@@ -152,54 +152,27 @@ func (s *Service) syncItems(ctx context.Context, live []herdr.Workspace) ([]sync
 	return items, nil
 }
 
-type workspaceState int
+type mainState string
 
 const (
-	classify workspaceState = iota
-	register
-	activate
-	markClosed
-	markArchived
-	restore
-	metadata
-	manager
+	router   mainState = "router"
+	onlyHost mainState = "onlyHost"
+	onlyDB   mainState = "onlyDB"
+	pair     mainState = "pair"
 )
 
-func (state workspaceState) String() string {
-	switch state {
-	case classify:
-		return "classify"
-	case register:
-		return "register"
-	case activate:
-		return "activate"
-	case markClosed:
-		return "markClosed"
-	case markArchived:
-		return "markArchived"
-	case restore:
-		return "restore"
-	case metadata:
-		return "metadata"
-	case manager:
-		return "manager"
-	default:
-		return "unknown"
-	}
-}
+type wsAction bool
 
-func (s *Service) workspaceFSM(ctx context.Context, item syncItem) (err error) {
-	state := classify
+const (
+	noHost   wsAction = false
+	haveHost wsAction = true
+)
+
+func (s *Service) mainFSM(ctx context.Context, item syncItem) (err error) {
+	state := router
 	defer func() {
 		if err != nil {
-			rid, wid := "", ""
-			if item.record != nil {
-				rid = item.record.ID
-			}
-			if item.workspace != nil {
-				wid = item.workspace.ID
-			}
-			err = fmt.Errorf("record %s workspace %s stage %s: %w", rid, wid, state, err)
+			err = fmt.Errorf("mainFSM %s: %w", state, err)
 		}
 	}()
 	for {
@@ -207,85 +180,138 @@ func (s *Service) workspaceFSM(ctx context.Context, item syncItem) (err error) {
 			return err
 		}
 		switch state {
-		case classify:
-			if item.record == nil {
-				if item.workspace == nil {
-					return nil
+		case router:
+			switch {
+			case item.record == nil && item.workspace == nil:
+				return nil
+			case item.record == nil:
+				state = onlyHost
+			case item.workspace == nil:
+				state = onlyDB
+			default:
+				state = pair
+			}
+			continue
+		case onlyHost:
+			id, e := newID()
+			if e != nil {
+				return e
+			}
+			item.record = &model.Record{ID: id, HostID: item.workspace.ID, Label: item.workspace.Label, Status: model.WorkspaceActive, ManagerState: model.ManagerNone}
+			err = s.Store.ApplySync(ctx, []model.Record{*item.record})
+		case onlyDB:
+			err = s.wsFSM(ctx, noHost, &item)
+		case pair:
+			err = s.wsFSM(ctx, haveHost, &item)
+		default:
+			return fmt.Errorf("invalid main state %s", state)
+		}
+		if err != nil {
+			return err
+		}
+		if item.workspace != nil && item.record.Status == model.WorkspaceActive {
+			return s.managerFSM(ctx, *item.record)
+		}
+		return nil
+	}
+}
+
+// wsFSM follows durable record states until a state explicitly terminates.
+func (s *Service) wsFSM(ctx context.Context, action wsAction, item *syncItem) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("record %s workspace %s state %s: %w", item.record.ID, item.record.HostID, item.record.Status, err)
+		}
+	}()
+	commit := func(status model.WorkspaceStatus) error {
+		r := *item.record
+		r.Status = status
+		if item.workspace != nil {
+			r.HostID = item.workspace.ID
+		}
+		if err := s.Store.ApplySync(ctx, []model.Record{r}); err != nil {
+			return err
+		}
+		*item.record = r
+		return nil
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		switch item.record.Status {
+		case model.WorkspaceActive:
+			if action == noHost {
+				if err := commit(model.WorkspaceClosed); err != nil {
+					return err
 				}
-				state = register
 				continue
 			}
-			if item.workspace == nil {
-				switch item.record.Status {
-				case model.WorkspaceActive:
-					state = markClosed
-				case model.WorkspaceArchiving:
-					state = markArchived
-				default:
-					return nil
-				}
-			} else {
-				switch item.record.Status {
-				case model.WorkspaceArchived:
-					state = restore
-				case model.WorkspaceActive:
-					state = activate
-				case model.WorkspaceClosed, model.WorkspaceArchiving:
-					state = activate
-				default:
-					return fmt.Errorf("invalid status %s", item.record.Status)
+			if item.record.HostID != item.workspace.ID {
+				if err := commit(model.WorkspaceActive); err != nil {
+					return err
 				}
 			}
-		case register:
-			id, err := newID()
+			return s.syncMetadata(ctx, item)
+		case model.WorkspaceArchiving:
+			if action == haveHost {
+				if err := s.Host.Close(ctx, item.workspace.ID); err != nil {
+					return err
+				}
+				action = noHost
+				item.workspace = nil
+			}
+			if err := commit(model.WorkspaceArchived); err != nil {
+				return err
+			}
+		case model.WorkspaceArchived:
+			if action == noHost {
+				return nil
+			}
+			if err := s.restoreWorkspace(ctx, *item.record, *item.workspace); err != nil {
+				return err
+			}
+			r, err := s.Store.Get(item.record.ID)
 			if err != nil {
 				return err
 			}
-			item.record = &model.Record{ID: id, ManagerState: model.ManagerNone}
-			state = activate
-		case activate:
-			r := *item.record
-			r.HostID, r.Status = item.workspace.ID, model.WorkspaceActive
-			if err := s.Store.ApplySync(ctx, []model.Record{r}); err != nil {
+			*item.record = r
+			item.workspace.Label = r.Label
+		case model.WorkspaceClosed:
+			if action == noHost {
+				return nil
+			}
+			if err := s.syncMetadata(ctx, item); err != nil {
 				return err
 			}
-			*item.record = r
-			state = metadata
-		case markClosed, markArchived:
-			r := *item.record
-			r.Status = model.WorkspaceClosed
-			if state == markArchived {
-				r.Status = model.WorkspaceArchived
-			}
-			if err := s.Store.ApplySync(ctx, []model.Record{r}); err != nil {
+			if err := commit(model.WorkspaceActive); err != nil {
 				return err
 			}
-			*item.record = r
-			return nil
-		case restore:
-			return s.restoreWorkspace(ctx, *item.record, *item.workspace)
-		case metadata:
-			r, w := *item.record, *item.workspace
-			if (w.Label == restorePrefix+r.ID || w.Label == managerPrefix+r.ID) && r.Label != "" {
-				if w.Label != r.Label {
-					caller, ok := s.Host.(Caller)
-					if !ok {
-						return fmt.Errorf("host does not support name cleanup")
-					}
-					if err := caller.Call(ctx, nil, "workspace", "rename", w.ID, r.Label); err != nil {
-						return err
-					}
-				}
-			} else if r.Label != w.Label {
-				r.Label = w.Label
-				if err := s.Store.ApplySync(ctx, []model.Record{r}); err != nil {
-					return err
-				}
-				*item.record = r
-			}
-			state = manager
-		case manager:
-			return s.managerFSM(ctx, *item.record)
+		default:
+			return fmt.Errorf("invalid status %s", item.record.Status)
 		}
 	}
+}
+
+func (s *Service) syncMetadata(ctx context.Context, item *syncItem) error {
+	r, w := *item.record, *item.workspace
+	if (w.Label == restorePrefix+r.ID || w.Label == managerPrefix+r.ID) && r.Label != "" {
+		if w.Label != r.Label {
+			caller, ok := s.Host.(Caller)
+			if !ok {
+				return fmt.Errorf("host does not support name cleanup")
+			}
+			if err := caller.Call(ctx, nil, "workspace", "rename", w.ID, r.Label); err != nil {
+				return err
+			}
+		}
+	} else if r.Label != w.Label {
+		r.Label = w.Label
+		if err := s.Store.ApplySync(ctx, []model.Record{r}); err != nil {
+			return err
+		}
+		*item.record = r
+	}
+
+	return nil
 }
