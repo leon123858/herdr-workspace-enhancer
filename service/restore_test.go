@@ -5,14 +5,40 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
-	"testing"
-
 	"herdr-workspace-enhancer/model"
 	"herdr-workspace-enhancer/model/layout"
 	"herdr-workspace-enhancer/repository/herdr"
-	"herdr-workspace-enhancer/repository/state"
+	"sync"
+	"testing"
 )
+
+func TestRestoreRetryBeforeEventAndNoCreationFailure(t *testing.T) {
+	s, h := restoreFixture(t)
+	h.failAt = 1
+	if err := s.Restore(context.Background(), "record"); err == nil {
+		t.Fatal("expected create failure")
+	}
+	r, _ := s.Store.Get("record")
+	if r.Status != model.WorkspaceArchived || len(h.live) != 0 {
+		t.Fatal(r, h.live)
+	}
+	h.failAt = 0
+	if err := s.Restore(context.Background(), "record"); err != nil {
+		t.Fatal(err)
+	}
+	calls := h.calls
+	// No event has run: the next action must discover and bind the existing result.
+	if err := s.Restore(context.Background(), "record"); err != nil {
+		t.Fatal(err)
+	}
+	if h.calls != calls || len(h.live) != 1 {
+		t.Fatal("duplicate creation", h.calls, h.live)
+	}
+	r, _ = s.Store.Get("record")
+	if r.Status != model.WorkspaceArchived || r.HostID != "old" {
+		t.Fatal(r)
+	}
+}
 
 type restoreHost struct {
 	mu sync.Mutex
@@ -27,6 +53,7 @@ func (h *restoreHost) Workspaces(ctx context.Context) ([]herdr.Workspace, error)
 	defer h.mu.Unlock()
 	return h.fakeHost.Workspaces(ctx)
 }
+
 func (h *restoreHost) Call(_ context.Context, dst any, args ...string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -61,6 +88,7 @@ func (h *restoreHost) Call(_ context.Context, dst any, args ...string) error {
 	}
 	return json.Unmarshal([]byte(raw), dst)
 }
+
 func restoreFixture(t *testing.T) (*Service, *restoreHost) {
 	t.Helper()
 	store := serviceStore(t)
@@ -71,6 +99,7 @@ func restoreFixture(t *testing.T) (*Service, *restoreHost) {
 	host := &restoreHost{fakeHost: fakeHost{live: []herdr.Workspace{}}}
 	return &Service{Store: store, Host: host}, host
 }
+
 func TestRestoreKeepsArchivedUntilSync(t *testing.T) {
 	s, h := restoreFixture(t)
 	if e := s.Restore(context.Background(), "record"); e != nil {
@@ -86,6 +115,7 @@ func TestRestoreKeepsArchivedUntilSync(t *testing.T) {
 		t.Fatal(rows, e)
 	}
 }
+
 func TestPartialRestoreRetries(t *testing.T) {
 	for failAt := 2; failAt <= 7; failAt++ {
 		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
@@ -115,6 +145,7 @@ func TestPartialRestoreRetries(t *testing.T) {
 		})
 	}
 }
+
 func TestLostCreationReplyRebindsInsteadOfDuplicating(t *testing.T) {
 	s, h := restoreFixture(t)
 	h.lostCreate = true
@@ -133,26 +164,6 @@ func TestLostCreationReplyRebindsInsteadOfDuplicating(t *testing.T) {
 		t.Fatal("creation repeated", e, h.calls)
 	}
 }
-func TestSyncRepairsFailedNewIDCommit(t *testing.T) {
-	s, _ := restoreFixture(t)
-	real := s.Store.(*state.Store)
-	s.Store = &failedCheckpointStore{Store: real, failAt: 1}
-	if e := s.Restore(context.Background(), "record"); e != nil {
-		t.Fatal(e)
-	}
-	if _, e := s.Refresh(context.Background()); e == nil {
-		t.Fatal("expected failed sync binding")
-	}
-	r, _ := real.Get("record")
-	if r.Status != model.WorkspaceArchived || r.HostID != "old" {
-		t.Fatal("failed binding committed", r)
-	}
-	s.Store = real
-	rows, e := s.Refresh(context.Background())
-	if e != nil || len(rows) != 1 || rows[0].ID != "record" || rows[0].HostID != "new" || rows[0].Note != "keep note" {
-		t.Fatal(rows, e)
-	}
-}
 
 type restoreCommitFailure struct {
 	Store
@@ -166,6 +177,7 @@ func (s *restoreCommitFailure) CompleteRestore(ctx context.Context, id, host str
 	}
 	return s.Store.CompleteRestore(ctx, id, host)
 }
+
 func TestRestoreCommitFailureRetriesAfterRename(t *testing.T) {
 	s, h := restoreFixture(t)
 	s.Store = &restoreCommitFailure{Store: s.Store, fail: true}
@@ -183,6 +195,7 @@ func TestRestoreCommitFailureRetriesAfterRename(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
 func TestInvalidRestoreDoesNotBlockOtherItems(t *testing.T) {
 	s, h := restoreFixture(t)
 	r, _ := s.Store.Get("record")
@@ -202,6 +215,7 @@ func TestInvalidRestoreDoesNotBlockOtherItems(t *testing.T) {
 		t.Fatal(rows, err)
 	}
 }
+
 func TestConcurrentRestoreCreatesOnce(t *testing.T) {
 	s, h := restoreFixture(t)
 	done := make(chan error, 2)

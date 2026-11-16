@@ -50,8 +50,8 @@ with tempfile.TemporaryDirectory() as tmp:
     with sqlite3.connect(database) as db:
         ids = dict(db.execute('SELECT host_id, id FROM workspaces'))
         note_ids = {'one': ids['h1'], 'two': ids['h2']}
-        db.execute('INSERT INTO workspaces (id, host_id, label, status, is_manager) VALUES (?, ?, ?, ?, ?)',
-                   ('manager-record', 'manager', 'Workspace Enhancer', 'active', True))
+        db.execute('INSERT INTO workspaces (id, host_id, label, status, manager_state) VALUES (?, ?, ?, ?, ?)',
+                   ('manager-record', 'manager', 'Workspace Enhancer', 'active', 'DONE'))
         db.execute('UPDATE workspaces SET note = ? WHERE id = ?', ('Side preview', note_ids['two']))
     def read_note(identity):
         with sqlite3.connect(database) as db:

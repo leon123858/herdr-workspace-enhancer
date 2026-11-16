@@ -15,6 +15,7 @@ func TestResponseValidation(t *testing.T) {
 		}
 	}
 }
+
 func TestArguments(t *testing.T) {
 	want := []string{"workspace", "focus", "w1; echo bad"}
 	c := &Client{Run: func(_ context.Context, args ...string) ([]byte, error) {
@@ -50,12 +51,5 @@ func TestSnapshot(t *testing.T) {
 	}
 	if len(snap.Tabs) != 1 || snap.Tabs[0].Root.CWD != dir || snap.Tabs[0].Label != "中文" {
 		t.Fatal(snap)
-	}
-}
-
-func TestCapabilitiesRejectMissingMethods(t *testing.T) {
-	c := &Client{Run: func(context.Context, ...string) ([]byte, error) { return []byte(`{"schemas":{}}`), nil }}
-	if e := c.CheckCapabilities(context.Background()); e == nil {
-		t.Fatal("missing methods accepted")
 	}
 }

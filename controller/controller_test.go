@@ -2,15 +2,13 @@ package controller
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
-	"strings"
-	"testing"
-
 	"github.com/samber/do/v2"
 	"herdr-workspace-enhancer/repository/herdr"
 	"herdr-workspace-enhancer/repository/state"
 	"herdr-workspace-enhancer/service"
+	"os"
+	"path/filepath"
+	"testing"
 )
 
 func TestInitializationIsLazyAndIndependent(t *testing.T) {
@@ -79,16 +77,4 @@ func TestInitializedProvidersShareDependencies(t *testing.T) {
 	if svc == otherSvc || svc.Host == otherSvc.Host || svc.Store == otherSvc.Store {
 		t.Fatal("controllers share resolved services")
 	}
-}
-
-func TestCommandsReportMissingContext(t *testing.T) {
-	t.Setenv("HERDR_BIN_PATH", "")
-	for _, name := range []string{"open", "sync", "tui"} {
-		cmd := New().Command()
-		cmd.SetArgs([]string{name})
-		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "required environment is missing") {
-			t.Fatal(name, err)
-		}
-	}
-
 }

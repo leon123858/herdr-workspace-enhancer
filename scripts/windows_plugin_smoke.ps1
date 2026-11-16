@@ -72,7 +72,7 @@ try {
   Wait-ManagerText 'event-renamed' $false
   $databases=@(Get-ChildItem -LiteralPath $root -Filter state.sqlite -Recurse)
   if($databases.Count -ne 1){throw 'Expected one session database'}
-  $query = 'import json,sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.row_factory=sqlite3.Row; print(json.dumps([dict(r) for r in db.execute("SELECT * FROM workspaces WHERE is_manager = 0 ORDER BY rowid")]))'
+  $query = 'import json,sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.row_factory=sqlite3.Row; print(json.dumps([dict(r) for r in db.execute("SELECT * FROM workspaces WHERE manager_state = ''NONE'' ORDER BY rowid")]))'
   $recordJson = & $python -c $query $databases[0].FullName
   if($LASTEXITCODE -ne 0){throw 'Failed to inspect SQLite session database'}
   $records=@($recordJson | ConvertFrom-Json)
