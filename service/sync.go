@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
-	"gorm.io/gorm"
 	"herdr-workspace-enhancer/model"
 	"herdr-workspace-enhancer/repository/herdr"
+
+	"gorm.io/gorm"
 )
 
 // Refresh accepts only a successful complete scan. Herdr's session must already
@@ -66,71 +68,86 @@ func (s *Service) repairLocked(original error) error {
 }
 
 type syncItem struct {
-	record         *model.Record
-	workspace      *herdr.Workspace
-	resolved       *model.Record
-	resolutionDone bool
+	record    *model.Record
+	workspace *herdr.Workspace
 }
 
-// Complete all reads and identity checks before any item can mutate the host.
+// Resolve all identities before the FSM performs any writes.
 func (s *Service) syncItems(ctx context.Context, live []herdr.Workspace) ([]syncItem, error) {
 	records, err := s.Store.NonClosed(ctx)
 	if err != nil {
 		return nil, err
 	}
-	byHost := map[string]*model.Record{}
-	for i := range records {
-		r := &records[i]
-		if r.HostID != "" {
-			if byHost[r.HostID] != nil {
-				return nil, fmt.Errorf("ambiguous host binding %s", r.HostID)
-			}
-			byHost[r.HostID] = r
+	hosts, db := newIdentitySet[*herdr.Workspace](), newIdentitySet[*model.Record]()
+	warn := func(err error) {
+		if err != nil {
+			slog.Warn("workspace sync identity skipped", "error", err)
 		}
 	}
-	items := make([]syncItem, 0, len(records)+len(live))
-	seenHost, seenRecord := map[string]bool{}, map[string]bool{}
+
+	// get host ws and non closed record in db
 	for i := range live {
-		w := &live[i]
-		if w.ID == "" || seenHost[w.ID] {
-			return nil, fmt.Errorf("invalid Herdr workspace identity")
+		warn(hosts.add("", live[i].ID, &live[i]))
+	}
+	for i := range records {
+		warn(db.add(records[i].ID, records[i].HostID, &records[i]))
+	}
+
+	// use host ws try to bind record in db, 
+	// if not found, try to find record by label prefix
+	// so may have to key: host id or record id.
+	for _, e := range hosts.entries() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		seenHost[w.ID] = true
-		item := syncItem{workspace: w, record: byHost[w.ID]}
-		candidate := item.record
-		if candidate == nil {
-			r, err := s.Store.FindHost(ctx, w.ID)
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				for _, prefix := range []string{managerPrefix, restorePrefix} {
-					if strings.HasPrefix(w.Label, prefix) {
-						r, err = s.Store.Get(strings.TrimPrefix(w.Label, prefix))
-						if err == nil && (r.ManagerState != model.ManagerNone) != (prefix == managerPrefix) {
-							err = gorm.ErrRecordNotFound
-						}
-						break
-					}
-				}
+		w := e.value
+		r, err := s.Store.FindHost(ctx, w.ID)
+		if err == nil {
+			warn(db.add(r.ID, r.HostID, &r))
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		for _, prefix := range []string{managerPrefix, restorePrefix} {
+			if !strings.HasPrefix(w.Label, prefix) {
+				continue
 			}
-			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			r, err := s.Store.Get(strings.TrimPrefix(w.Label, prefix))
+			if err == nil {
+				warn(db.add(r.ID, r.HostID, &r))
+				warn(hosts.bindRecord(e, r.ID))
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil, err
 			}
-			if err == nil {
-				item.resolved = &r
-				candidate = &r
-			}
+			break
 		}
-		if candidate != nil {
-			if seenRecord[candidate.ID] {
-				return nil, fmt.Errorf("ambiguous workspace binding for %s", candidate.ID)
-			}
-			seenRecord[candidate.ID] = true
-		}
-		items = append(items, item)
 	}
-	for i := range records {
-		if !seenRecord[records[i].ID] {
-			items = append(items, syncItem{record: &records[i]})
+
+	items := make([]syncItem, 0, len(live)+len(records))
+
+	// get intersaction of host ws and record in db, remove them from both sets
+	for _, byHost := range []bool{true, false} {
+		for _, h := range hosts.entries() {
+			var r *identityEntry[*model.Record]
+			if byHost {
+				r = db.hosts[h.hostID]
+			} else {
+				r = db.records[h.recordID]
+			}
+			if r == nil {
+				continue
+			}
+			items = append(items, syncItem{record: r.value, workspace: h.value})
+			hosts.remove(h)
+			db.remove(r)
 		}
+	}
+
+	// push non intersected host ws and record in db to items, so FSM can handle them
+	for _, h := range hosts.entries() {
+		items = append(items, syncItem{workspace: h.value})
+	}
+	for _, r := range db.entries() {
+		items = append(items, syncItem{record: r.value})
 	}
 	return items, nil
 }
@@ -139,7 +156,6 @@ type workspaceState int
 
 const (
 	classify workspaceState = iota
-	resolveRecord
 	register
 	activate
 	markClosed
@@ -153,8 +169,6 @@ func (state workspaceState) String() string {
 	switch state {
 	case classify:
 		return "classify"
-	case resolveRecord:
-		return "resolveRecord"
 	case register:
 		return "register"
 	case activate:
@@ -198,11 +212,7 @@ func (s *Service) workspaceFSM(ctx context.Context, item syncItem) (err error) {
 				if item.workspace == nil {
 					return nil
 				}
-				if !item.resolutionDone {
-					state = resolveRecord
-				} else {
-					state = register
-				}
+				state = register
 				continue
 			}
 			if item.workspace == nil {
@@ -226,9 +236,6 @@ func (s *Service) workspaceFSM(ctx context.Context, item syncItem) (err error) {
 					return fmt.Errorf("invalid status %s", item.record.Status)
 				}
 			}
-		case resolveRecord:
-			item.record, item.resolutionDone = item.resolved, true
-			state = classify
 		case register:
 			id, err := newID()
 			if err != nil {

@@ -41,7 +41,7 @@ func TestDeleteArchived(t *testing.T) {
 	}
 }
 func TestDeleteArchivedFailuresPreserveRecord(t *testing.T) {
-	for _, kind := range []string{"active", "archiving", "closed", "manager", "scan", "ambiguous", "close", "lost close"} {
+	for _, kind := range []string{"active", "archiving", "closed", "manager", "scan", "close", "lost close"} {
 		t.Run(kind, func(t *testing.T) {
 			s, h := restoreFixture(t)
 			h.live = []herdr.Workspace{{ID: "old"}}

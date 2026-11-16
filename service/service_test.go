@@ -126,7 +126,7 @@ func TestSyncLifecycleAndExplicitArchive(t *testing.T) {
 	}
 }
 func TestSyncInvalidScanNeverChangesState(t *testing.T) {
-	for _, kind := range []string{"error", "nil", "duplicate", "empty-id"} {
+	for _, kind := range []string{"error", "nil"} {
 		t.Run(kind, func(t *testing.T) {
 			store := serviceStore(t)
 			r := model.Record{ID: "one", HostID: "w1", Label: "Original", Note: "note", Status: model.WorkspaceActive}
@@ -295,9 +295,11 @@ func TestArchiveConfirmedRejectsChanges(t *testing.T) {
 func TestSyncRebindsLostCreationWithoutLosingNote(t *testing.T) {
 	s, h := restoreFixture(t)
 	h.live = []herdr.Workspace{{ID: "new", Label: restorePrefix + "record"}, {ID: "other", Label: restorePrefix + "record"}}
-	if _, err := s.Refresh(context.Background()); err == nil || h.calls != 0 {
-		t.Fatal("ambiguity modified host", err, h.calls)
+	items, err := s.syncItems(context.Background(), h.live)
+	if err != nil || len(items) != 2 || items[0].record == nil || items[1].workspace == nil || items[1].record != nil {
+		t.Fatal("duplicate label lost workspace", items, err)
 	}
+
 	h.live = h.live[:1]
 	rows, err := s.Refresh(context.Background())
 	if err != nil || len(rows) != 1 || rows[0].ID != "record" || rows[0].Note != "keep note" {
