@@ -1,10 +1,30 @@
 package tui
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	tea "github.com/charmbracelet/bubbletea"
+	"time"
+)
 
 func (m model) handleMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 	g := m.geometry()
 	press := v.Action == tea.MouseActionPress && v.Button == tea.MouseButtonLeft
+	if m.recordDrag != "" {
+		m.dragY = v.Y
+		if v.Action == tea.MouseActionRelease {
+			source := m.recordDrag
+			m.recordDrag = ""
+			if m.dragActive && g.list.contains(v.X, v.Y) && v.Y >= g.list.y+3 && v.Y < g.list.y+g.list.h-1 && m.dragTarget != "" {
+				cmd := m.moveRecord(source, m.dragTarget, m.dragBefore)
+				return m, cmd
+			}
+			return m, nil
+		}
+		if v.Action == tea.MouseActionMotion {
+			m.dragActive = true
+			m.setDragTarget()
+		}
+		return m, nil
+	}
 	if m.busy {
 		return m, nil
 	}
@@ -95,7 +115,19 @@ func (m model) handleMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 		i := m.listOffset + v.Y - (g.list.y + 3)
 		rows := m.visible()
 		if v.Y >= g.list.y+3 && v.Y < g.list.y+g.list.h-1 && i >= 0 && i < len(rows) {
+			if v.X == g.list.x+1 && !m.dirty() {
+				m.recordDrag = rows[i].ID
+				m.dragToken++
+				m.orderEpoch++
+				m.dragActive = false
+				m.dragTarget = ""
+				m.dragY = v.Y
+				m.status = "Drag to move · Esc cancels"
+			}
 			cmd := m.request(action{kind: ActionSelect, id: rows[i].ID})
+			if m.recordDrag != "" {
+				cmd = tea.Batch(cmd, dragLater(m.dragToken))
+			}
 			return m, cmd
 		}
 		m.setMode(ModeList)
@@ -131,4 +163,36 @@ func (m model) handleMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(focus, cmd)
 	}
 	return m, nil
+}
+
+type dragTick struct{ token uint64 }
+
+func dragLater(token uint64) tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return dragTick{token} })
+}
+func (m *model) scrollDrag() {
+	g := m.geometry()
+	if m.dragY <= g.list.y+3 {
+		m.listOffset = max(0, m.listOffset-1)
+	} else if m.dragY >= g.list.y+g.list.h-2 {
+		m.listOffset = min(max(0, len(m.visible())-m.listHeight()), m.listOffset+1)
+	}
+}
+func (m *model) setDragTarget() {
+	rows := m.visible()
+	if len(rows) == 0 {
+		return
+	}
+	g := m.geometry()
+	i := m.listOffset + max(0, min(m.listHeight()-1, m.dragY-g.list.y-3))
+	i = min(i, len(rows)-1)
+	source := 0
+	for n, r := range rows {
+		if r.ID == m.recordDrag {
+			source = n
+			break
+		}
+	}
+	m.dragTarget = rows[i].ID
+	m.dragBefore = i < source
 }

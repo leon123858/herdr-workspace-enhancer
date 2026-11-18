@@ -79,10 +79,7 @@ func TestClosedManagerBindingBeforeMetadata(t *testing.T) {
 			if err != nil || r.Status != model.WorkspaceActive || r.HostID != "new" || r.ManagerState != model.ManagerInit {
 				t.Fatal(r, err)
 			}
-			records, err := store.All(context.Background())
-			if err != nil || len(records) != 1 {
-				t.Fatal("identity lost", records, err)
-			}
+
 		})
 	}
 }

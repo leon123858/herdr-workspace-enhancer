@@ -52,7 +52,7 @@ func (s *Service) refreshLocked(ctx context.Context) ([]model.Record, error) {
 	if err := errors.Join(failures...); err != nil {
 		return nil, err
 	}
-	return s.Store.List()
+	return s.Store.ListSortedRecords(ctx)
 }
 
 // Failure repair is a separate logical operation with its own bounded context.
@@ -74,7 +74,7 @@ type syncItem struct {
 
 // Resolve all identities before the FSM performs any writes.
 func (s *Service) syncItems(ctx context.Context, live []herdr.Workspace) ([]syncItem, error) {
-	records, err := s.Store.NonClosed(ctx)
+	records, err := s.Store.ListNonClosedRecords(ctx)
 	if err != nil {
 		return nil, err
 	}

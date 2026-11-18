@@ -109,6 +109,8 @@ func TestAsyncBlinkForwarding(t *testing.T) {
 		t.Run(string(mode), func(t *testing.T) {
 			m := NewUI(nil, nil, nil).(model)
 			m.mode = mode
+			m.editor.Cursor.SetMode(cursor.CursorBlink)
+			m.search.Cursor.SetMode(cursor.CursorBlink)
 			if mode == ModeEdit {
 				m.editor.Focus()
 			} else {

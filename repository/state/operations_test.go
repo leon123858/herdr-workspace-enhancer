@@ -34,10 +34,15 @@ func TestApplySyncAtomicAndPreservesLatestNote(t *testing.T) {
 	ctx := context.Background()
 	put(t, s, Record{ID: "a", HostID: "h", Status: model.WorkspaceActive})
 	put(t, s, Record{ID: "b", HostID: "other", Status: model.WorkspaceActive})
-	records, err := s.All(ctx)
+	a, err := s.Get("a")
 	if err != nil {
 		t.Fatal(err)
 	}
+	b, err := s.Get("b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := []Record{a, b}
 	if _, err = s.Save("a", "new note"); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +117,8 @@ func TestDeleteArchivedConditional(t *testing.T) {
 			if (err == nil) != tc.ok {
 				t.Fatal(err)
 			}
-			rows, err := s.All(context.Background())
+			var rows []workspaceRow
+			err = s.db.Find(&rows).Error
 			if err != nil || tc.ok && len(rows) != 0 || !tc.ok && (len(rows) != 1 || rows[0].Note != "note") {
 				t.Fatal(rows, err)
 			}

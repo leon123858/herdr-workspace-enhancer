@@ -22,13 +22,18 @@ import (
 type Note = model.Note
 
 type Store struct {
-	dir string
-	db  *gorm.DB
+	dir   string
+	newDB bool
+	db    *gorm.DB
 }
 
 // Open requires an explicit host-owned directory and session identity. Tables
-// are created or extended by AutoMigrate; existing JSON files are not imported.
+// are upgraded through versioned migrations; existing JSON files are not imported.
 func Open(root, session string) (*Store, error) {
+	return openDatabase(root, session, false, func(s *Store) error { _, err := s.migrate(context.Background(), CurrentDBVersion); return err })
+}
+
+func openDatabase(root, session string, readOnly bool, action func(*Store) error) (*Store, error) {
 	if root == "" || session == "" {
 		return nil, errors.New("plugin state directory and session identity are required")
 	}
@@ -50,7 +55,16 @@ func Open(root, session string) (*Store, error) {
 	}
 	defer unlock()
 	path := filepath.Join(dir, "state.sqlite")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	_, statErr := os.Stat(path)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return nil, statErr
+	}
+	s.newDB = os.IsNotExist(statErr)
+	flags := os.O_CREATE | os.O_RDWR
+	if readOnly {
+		flags = os.O_RDONLY
+	}
+	f, err := os.OpenFile(path, flags, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +78,11 @@ func Open(root, session string) (*Store, error) {
 	q := url.Values{}
 	q.Set("_txlock", "immediate")
 	q.Add("_pragma", "busy_timeout(5000)")
-	q.Add("_pragma", "journal_mode(WAL)")
+	if readOnly {
+		q.Set("mode", "ro")
+	} else {
+		q.Add("_pragma", "journal_mode(WAL)")
+	}
 	q.Add("_pragma", "foreign_keys(1)")
 	q.Add("_pragma", "synchronous(FULL)")
 	u.RawQuery = q.Encode()
@@ -79,9 +97,9 @@ func Open(root, session string) (*Store, error) {
 	}
 	pool.SetMaxOpenConns(1)
 	pool.SetMaxIdleConns(1)
-	if err = db.AutoMigrate(&workspaceRow{}); err != nil {
+	if err = action(s); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("migrate session database: %w", err)
+		return nil, err
 	}
 	return s, nil
 }

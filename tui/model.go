@@ -13,8 +13,8 @@ import (
 	textarea "herdr-workspace-enhancer/tui/noteeditor"
 
 	keybind "github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	textinput "herdr-workspace-enhancer/tui/searchinput"
 )
 
 type refreshed struct {
@@ -30,6 +30,7 @@ type deleted struct{ err error }
 type pollState struct{}
 type dismissCopyNotice struct{ id uint64 }
 type storedRows struct {
+	epoch   uint64
 	records []state.Record
 	err     error
 }
@@ -44,6 +45,14 @@ func pollLater() tea.Cmd {
 
 // model implements UI and holds the workspace manager's interaction state.
 type model struct {
+	recordDrag string
+	dragTarget string
+	dragBefore bool
+	dragY      int
+	dragActive bool
+	dragToken  uint64
+	orderEpoch uint64
+
 	settings                  *workspace.SettingsService
 	service                   *workspace.Service
 	focus                     func(context.Context, string) error
@@ -318,20 +327,47 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = max(1, v.Width)
 		m.height = max(1, v.Height)
+		m.recordDrag = ""
 		m.dragging = false
 		m.selecting = false
 		m.resize()
 		return m, nil
+	case reordered:
+		m.busy = false
+		if v.records != nil {
+			m.updateRows(v.records)
+		}
+		for i, r := range m.visible() {
+			if r.ID == v.source {
+				m.cursor = i
+				break
+			}
+		}
+		m.ensureVisible()
+		m.status = "Order saved"
+		if v.err != nil {
+			m.status = "Could not move record: " + v.err.Error()
+		}
+		return m, nil
+	case dragTick:
+		if m.recordDrag == "" || v.token != m.dragToken {
+			return m, nil
+		}
+		if m.dragActive {
+			m.scrollDrag()
+			m.setDragTarget()
+		}
+		return m, dragLater(m.dragToken)
 	case pollState:
-		if m.busy || m.mode == ModeConfirmDelete || m.mode == ModeConfirmArchive || m.mode == ModeConfirmUnsaved || m.service == nil {
+		if m.recordDrag != "" || m.busy || m.mode == ModeConfirmDelete || m.mode == ModeConfirmArchive || m.mode == ModeConfirmUnsaved || m.service == nil {
 			return m, pollLater()
 		}
 		return m, func() tea.Msg {
-			r, e := m.service.StoredRows()
-			return storedRows{r, e}
+			r, e := m.service.StoredRows(context.Background())
+			return storedRows{records: r, err: e, epoch: m.orderEpoch}
 		}
 	case storedRows:
-		if !m.busy && m.mode != ModeConfirmDelete && m.mode != ModeConfirmArchive && m.mode != ModeConfirmUnsaved {
+		if v.epoch == m.orderEpoch && m.recordDrag == "" && !m.busy && m.mode != ModeConfirmDelete && m.mode != ModeConfirmArchive && m.mode != ModeConfirmUnsaved {
 			if v.err != nil {
 				m.status = v.err.Error()
 			} else {
@@ -340,6 +376,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, pollLater()
 	case refreshed:
+		if m.recordDrag != "" {
+			return m, nil
+		}
 		m.busy = false
 		if v.err != nil {
 			m.status = v.err.Error()
@@ -363,7 +402,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = "Archived workspace deleted"
 		}
-		return m, func() tea.Msg { r, e := m.service.StoredRows(); return refreshed{r, e} }
+		return m, func() tea.Msg { r, e := m.service.StoredRows(context.Background()); return refreshed{r, e} }
 	case finished:
 		m.busy = false
 		if v.err != nil {
@@ -371,10 +410,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = "Operation accepted; waiting for sync"
 		}
-		return m, func() tea.Msg { r, e := m.service.StoredRows(); return refreshed{r, e} }
+		return m, func() tea.Msg { r, e := m.service.StoredRows(context.Background()); return refreshed{r, e} }
 	case tea.MouseMsg:
 		return m.handleMouse(v)
 	case tea.KeyMsg:
+		if m.recordDrag != "" {
+			if v.String() == "esc" {
+				m.recordDrag = ""
+			}
+			return m, nil
+		}
 		if m.mode == ModeConfirmUnsaved {
 			cmd := m.confirm(confirmationFor(v))
 			return m, cmd
@@ -420,6 +465,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		switch {
+		case v.String() == "J" || v.String() == "K":
+			rows := m.visible()
+			i := m.cursor
+			target := i + 1
+			if v.String() == "K" {
+				target = i - 1
+			}
+			if i >= 0 && i < len(rows) && target >= 0 && target < len(rows) {
+				cmd := m.moveRecord(rows[i].ID, rows[target].ID, target < i)
+				return m, cmd
+			}
+			return m, nil
 		case keybind.Matches(v, keys.Quit):
 			cmd := m.request(action{kind: ActionQuit})
 			return m, cmd
@@ -509,4 +566,22 @@ func (m *model) confirmDelete(confirmed bool) tea.Cmd {
 	m.busy = true
 	id := m.deleteTarget.ID
 	return func() tea.Msg { return deleted{m.service.DeleteArchived(context.Background(), id)} }
+}
+
+type reordered struct {
+	source  string
+	records []state.Record
+	err     error
+}
+
+func (m *model) moveRecord(source, target string, before bool) tea.Cmd {
+	if m.service == nil || source == target || m.busy {
+		return nil
+	}
+	m.busy = true
+	m.orderEpoch++
+	return func() tea.Msg {
+		rows, err := m.service.MoveRecord(context.Background(), source, target, before)
+		return reordered{source, rows, err}
+	}
 }

@@ -9,12 +9,12 @@ import (
 	"testing"
 )
 
-func TestSingleTableAutoMigrationAndReopen(t *testing.T) {
+func TestVersionedMigrationAndReopen(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "spaces # 中文")
 	s := testStore(t, root)
 	put(t, s, Record{ID: "one", HostID: "h1", Status: model.WorkspaceActive, Note: "persistent"})
 	var tables []string
-	if e := s.db.Raw("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tables).Error; e != nil || len(tables) != 1 || tables[0] != "workspaces" {
+	if e := s.db.Raw("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'goose_db_version'").Scan(&tables).Error; e != nil || len(tables) != 1 || tables[0] != "workspaces" {
 		t.Fatal(tables, e)
 	}
 	other := testStore(t, root)
@@ -69,7 +69,7 @@ func TestNoLegacyJSONImport(t *testing.T) {
 		t.Fatal(e)
 	}
 	other := testStore(t, root)
-	rows, e := other.List()
+	rows, e := other.ListSortedRecords(context.Background())
 	if e != nil || len(rows) != 0 {
 		t.Fatal(rows, e)
 	}

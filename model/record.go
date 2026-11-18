@@ -31,8 +31,8 @@ type Record struct {
 }
 
 type WorkspaceStore interface {
-	All(context.Context) ([]Record, error)
-	NonClosed(context.Context) ([]Record, error)
+	MoveRecord(context.Context, string, string, bool) ([]Record, error)
+	ListNonClosedRecords(context.Context) ([]Record, error)
 	FindHost(context.Context, string) (Record, error)
 	CompleteRestore(context.Context, string, string) error
 	DeleteArchived(context.Context, string, string) error
@@ -41,7 +41,7 @@ type WorkspaceStore interface {
 	CreateManager(context.Context, Record) error
 	CompleteManager(context.Context, string, string) error
 	Get(string) (Record, error)
-	List() ([]Record, error)
+	ListSortedRecords(context.Context) ([]Record, error)
 	IsManager(string) (bool, error)
 	Load(string) (Note, error)
 	Save(string, string) (Note, error)

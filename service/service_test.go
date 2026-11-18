@@ -46,7 +46,7 @@ func (f *fakeHost) Snapshot(context.Context, herdr.Workspace) (herdr.Snapshot, e
 
 func (f *fakeHost) Close(context.Context, string) error {
 	if f.store != nil {
-		rows, e := f.store.List()
+		rows, e := f.store.ListSortedRecords(context.Background())
 		if e != nil {
 			return e
 		}
@@ -258,7 +258,7 @@ func runHerdrIntegration(t *testing.T, fault string) {
 	if fault == "none" && e != nil {
 		t.Fatal(e)
 	}
-	records, e = store.List()
+	records, e = store.ListSortedRecords(context.Background())
 	if e != nil {
 		t.Fatal(e)
 	}

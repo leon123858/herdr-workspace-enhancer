@@ -3,6 +3,7 @@ package state
 import "herdr-workspace-enhancer/model"
 
 type workspaceRow struct {
+	SortOrder    *int
 	ID           string  `gorm:"primaryKey"`
 	HostID       *string `gorm:"uniqueIndex"`
 	Label        string

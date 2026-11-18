@@ -27,7 +27,9 @@ type Service struct {
 const restorePrefix = "enhancer-restore-"
 const managerPrefix = "enhancer-manager-"
 
-func (s *Service) StoredRows() ([]model.Record, error)      { return s.Store.List() }
+func (s *Service) StoredRows(ctx context.Context) ([]model.Record, error) {
+	return s.Store.ListSortedRecords(ctx)
+}
 func (s *Service) Load(id string) (model.Note, error)       { return s.Store.Load(id) }
 func (s *Service) Save(id, text string) (model.Note, error) { return s.Store.Save(id, text) }
 
@@ -35,4 +37,8 @@ func newID() (string, error) {
 	var b [16]byte
 	_, err := rand.Read(b[:])
 	return hex.EncodeToString(b[:]), err
+}
+
+func (s *Service) MoveRecord(ctx context.Context, source, target string, before bool) ([]model.Record, error) {
+	return s.Store.MoveRecord(ctx, source, target, before)
 }

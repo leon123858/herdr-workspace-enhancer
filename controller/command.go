@@ -13,6 +13,6 @@ func (c *Controller) Command() *cobra.Command {
 			return cmd.Help()
 		},
 		Args: cobra.NoArgs}
-	root.AddCommand(c.openCommand(), c.syncCommand(), c.tuiCommand())
+	root.AddCommand(c.dbCommand(), c.openCommand(), c.syncCommand(), c.tuiCommand())
 	return root
 }

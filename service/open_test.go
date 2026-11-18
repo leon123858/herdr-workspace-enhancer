@@ -86,9 +86,9 @@ func TestOpenManager(t *testing.T) {
 				if _, e := (&Service{Store: store, Host: client}).Refresh(context.Background()); e != nil {
 					t.Fatal(e)
 				}
-				records, e := store.All(context.Background())
-				if e != nil || len(records) != 1 || records[0].ManagerState != model.ManagerDone {
-					t.Fatal(records, e)
+				record, e := store.FindHost(context.Background(), "1")
+				if e != nil || record.ManagerState != model.ManagerDone {
+					t.Fatal(record, e)
 				}
 			}
 			if failure == "" && (creates != 1 || closes != 1) {
@@ -98,21 +98,21 @@ func TestOpenManager(t *testing.T) {
 				t.Fatal("closed shell after failed startup")
 			}
 			if failure != "" && failure != "workspace create" {
-				records, e := store.All(context.Background())
-				if e != nil || len(records) != 1 {
-					t.Fatal(records, e)
+				record, e := store.FindHost(context.Background(), "1")
+				if e != nil {
+					t.Fatal(record, e)
 				}
 				expected := model.ManagerInit
-				if records[0].ManagerState != expected {
-					t.Fatal(records[0])
+				if record.ManagerState != expected {
+					t.Fatal(record)
 				}
 				failure = ""
 				if _, e := (&Service{Store: store, Host: client}).Refresh(context.Background()); e != nil {
 					t.Fatal(e)
 				}
-				records, e = store.All(context.Background())
-				if e != nil || records[0].ManagerState != model.ManagerDone {
-					t.Fatal(records, e)
+				record, e = store.FindHost(context.Background(), "1")
+				if e != nil || record.ManagerState != model.ManagerDone {
+					t.Fatal(record, e)
 				}
 			}
 
@@ -175,7 +175,7 @@ func TestCreateEventWaitsForManagerRegistration(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	rows, err := store.List()
+	rows, err := store.ListSortedRecords(context.Background())
 	if err != nil || len(rows) != 0 {
 		t.Fatal("manager recorded by create event", rows, err)
 	}

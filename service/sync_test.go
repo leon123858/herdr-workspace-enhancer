@@ -82,7 +82,7 @@ func TestSyncInvalidScanNeverChangesState(t *testing.T) {
 			if e != nil || got.Status != model.WorkspaceActive || got.Label != "Original" || got.Note != "note" {
 				t.Fatal(got, e)
 			}
-			rows, _ := store.List()
+			rows, _ := store.ListSortedRecords(context.Background())
 			if len(rows) != 1 {
 				t.Fatal("scan partly committed", rows)
 			}
@@ -157,7 +157,7 @@ func TestSyncWriteFailureRollsBackTheWholeScan(t *testing.T) {
 	if _, e := s.Refresh(context.Background()); e == nil {
 		t.Fatal("expected SQL failure")
 	}
-	rows, e := store.List()
+	rows, e := store.ListSortedRecords(context.Background())
 	if e != nil || len(rows) != 1 || rows[0].HostID != "old" || rows[0].Status != model.WorkspaceActive || rows[0].Note != "keep" {
 		t.Fatal("partial sync committed", rows, e)
 	}

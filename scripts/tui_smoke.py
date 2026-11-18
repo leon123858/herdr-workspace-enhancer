@@ -80,6 +80,21 @@ with tempfile.TemporaryDirectory() as tmp:
         read(1.5)
         assert b'Example project' in output, output
         assert b'\x1b[?1002h' in output, 'mouse reporting disabled'
+        def ordered_hosts():
+            with sqlite3.connect(database) as db:
+                return [row[0] for row in db.execute("SELECT host_id FROM workspaces WHERE manager_state = 'NONE' ORDER BY sort_order, rowid")]
+        send(b'J')
+        assert ordered_hosts() == ['h2', 'h1'], ordered_hosts()
+        send(b'K')
+        assert ordered_hosts() == ['h1', 'h2'], ordered_hosts()
+        send(b'\x1b[<0;2;6M\x1b[<32;2;7M\x1b[<0;2;7m')
+        assert ordered_hosts() == ['h2', 'h1'], ordered_hosts()
+        send(b'\x1b[<0;2;7M\x1b[<32;2;6M\x1b[<0;2;6m')
+        assert ordered_hosts() == ['h1', 'h2'], ordered_hosts()
+        send(b'/')
+        assert b'\x1b[5;4H\x1b[?25h' in output, 'search insertion cursor missing'
+        assert b'herdr-cursor' not in output, 'private cursor marker leaked'
+        send(b'\x1b')
         click(3, 7)
         assert b'Side preview' in output, output
         send(b'\x1b[<0;36;5M')

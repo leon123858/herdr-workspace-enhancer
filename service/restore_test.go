@@ -210,7 +210,7 @@ func TestInvalidRestoreDoesNotBlockOtherItems(t *testing.T) {
 	if h.calls != 0 {
 		t.Fatal("invalid snapshot mutated host")
 	}
-	rows, err := s.Store.List()
+	rows, err := s.Store.ListSortedRecords(context.Background())
 	if err != nil || len(rows) != 2 {
 		t.Fatal(rows, err)
 	}

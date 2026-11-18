@@ -36,7 +36,9 @@ func (m *model) resize() {
 	g := m.geometry()
 	m.editor.SetWidth(max(1, g.note.w-2))
 	m.editor.SetHeight(max(1, g.note.h-3))
+	m.editor.RevealCursor()
 	m.search.Width = max(1, g.list.w-4)
+	m.search.SetCursor(m.search.Position())
 	m.ensureVisible()
 }
 func (m model) listHeight() int { return max(1, m.geometry().list.h-4) }
@@ -81,9 +83,16 @@ func (m model) View() string {
 	rows := m.visible()
 	for i := m.listOffset; i < min(len(rows), m.listOffset+m.listHeight()); i++ {
 		r := rows[i]
-		mark := "  "
+		mark := "⠿ "
 		if i == m.cursor {
-			mark = "> "
+			mark = "⠿>"
+		}
+		if m.recordDrag != "" && m.dragActive && r.ID == m.dragTarget {
+			if m.dragBefore {
+				mark = "↑ "
+			} else {
+				mark = "↓ "
+			}
 		}
 		line := clip(fmt.Sprintf("%s[%s] %s", mark, r.Status, r.Label), g.list.w-2)
 		if i == m.cursor {
@@ -150,7 +159,7 @@ func (m model) View() string {
 	if m.busy {
 		status = "Working… " + status
 	}
-	out := "Herdr Workspace Enhancer\n\n" + bodyView + "\n" + clip("Tab Switch pane · Ctrl+S Save · Esc Focus list", m.width) + "\n" + clip("↑↓ Select · f Filter · / Search · a Archive · d Delete archived · Enter Restore/focus · q Quit", m.width) + "\n" + clip(status, m.width)
+	out := "Herdr Workspace Enhancer\n\n" + bodyView + "\n" + clip("Tab Switch pane · Ctrl+S Save · Esc Focus list", m.width) + "\n" + clip("J/K Move · Drag ⠿ · ↑↓ Select · f Filter · / Search · a Archive · d Delete archived · Enter Restore/focus · q Quit", m.width) + "\n" + clip(status, m.width)
 	// Tiny terminals still receive a bounded frame.
 	lines := strings.Split(out, "\n")
 	if len(lines) > m.height {
@@ -159,5 +168,26 @@ func (m model) View() string {
 	for i := range lines {
 		lines[i] = ansi.Truncate(lines[i], m.width, "")
 	}
-	return strings.Join(lines, "\n")
+	x, y, visible := m.inputCursor()
+	return strings.Join(lines, "\n") + fmt.Sprintf("\x1b]777;herdr-cursor;%d;%d;%t\a", x, y, visible)
+}
+
+func (m model) inputCursor() (int, int, bool) {
+	g := m.geometry()
+	x, y := -1, -1
+	if m.mode == ModeEdit && m.noteLoaded {
+		cx, cy := m.editor.CursorPosition()
+		x = g.note.x + 1 + cx
+		y = g.note.y + 1 + cy
+		if cy < 0 || y >= g.note.y+g.note.h-2 || x >= g.note.x+g.note.w-1 {
+			return 0, 0, false
+		}
+	} else if m.mode == ModeSearch {
+		x = g.list.x + 1 + m.search.CursorColumn()
+		y = g.list.y + 2
+		if x >= g.list.x+g.list.w-1 {
+			return 0, 0, false
+		}
+	}
+	return x, y, x >= 0 && y >= 0 && x < m.width && y < m.height && !m.busy
 }

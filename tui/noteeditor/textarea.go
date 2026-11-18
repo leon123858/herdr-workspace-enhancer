@@ -1526,3 +1526,16 @@ func max(a, b int) int {
 	}
 	return b
 }
+
+// CursorPosition returns the insertion cell relative to the visible editor.
+func (m Model) CursorPosition() (int, int) {
+	y := m.cursorLineNumber() - m.viewport.YOffset
+	x := uniseg.StringWidth(m.getPromptString(m.cursorLineNumber())) + m.LineInfo().CharOffset
+	if m.ShowLineNumbers {
+		x += uniseg.StringWidth(m.formatLineNumber(m.row + 1))
+	}
+	return x, y
+}
+
+// RevealCursor refreshes wrapping after a layout change and keeps insertion visible.
+func (m *Model) RevealCursor() { m.View(); m.repositionView() }

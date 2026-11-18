@@ -8,10 +8,6 @@ import (
 	"herdr-workspace-enhancer/model"
 )
 
-func (s *Store) All(ctx context.Context) ([]Record, error) {
-	return allRecords(s.db.WithContext(ctx))
-}
-
 // ArchiveIntent is one conditional write; a stale preview cannot close a new host.
 func (s *Store) ArchiveIntent(ctx context.Context, id, host string, snapshot *model.Snapshot) error {
 	value := row(Record{Status: model.WorkspaceArchiving, Snapshot: snapshot})
@@ -75,8 +71,12 @@ func (s *Store) CompleteManager(ctx context.Context, id, host string) error {
 	return nil
 }
 
-func (s *Store) NonClosed(ctx context.Context) ([]Record, error) {
-	return allRecords(s.db.WithContext(ctx).Where("status <> ?", model.WorkspaceClosed))
+func (s *Store) ListNonClosedRecords(ctx context.Context) ([]Record, error) {
+	var rows []workspaceRow
+	if err := s.db.WithContext(ctx).Where("status <> ?", model.WorkspaceClosed).Order("rowid").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return recordsFromRows(rows), nil
 }
 func (s *Store) FindHost(ctx context.Context, host string) (Record, error) {
 	var r workspaceRow

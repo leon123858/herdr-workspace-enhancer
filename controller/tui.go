@@ -37,7 +37,7 @@ func (c *Controller) tuiCommand() *cobra.Command {
 			return err
 		}
 		m := tui.NewUI(s, host.Focus, settings)
-		_, err = tea.NewProgram(m, tea.WithMouseCellMotion(), tea.WithAltScreen(), tea.WithContext(cmd.Context())).Run()
+		_, err = tea.NewProgram(m, tea.WithOutput(tui.NewCursorWriter(os.Stdout)), tea.WithMouseCellMotion(), tea.WithAltScreen(), tea.WithContext(cmd.Context())).Run()
 		return err
 	}}
 }

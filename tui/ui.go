@@ -7,9 +7,10 @@ import (
 	"herdr-workspace-enhancer/service"
 	textarea "herdr-workspace-enhancer/tui/noteeditor"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
+	textinput "herdr-workspace-enhancer/tui/searchinput"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -33,10 +34,12 @@ var _ tea.Model = (UI)(nil)
 func NewUI(s *service.Service, focus func(context.Context, string) error, settings *service.SettingsService) UI {
 	lipgloss.SetHasDarkBackground(true)
 	editor := textarea.New()
+	editor.Cursor.SetMode(cursor.CursorHide)
 	editor.CharLimit = 0
 	editor.MaxHeight = 0
 	editor.MaxWidth = 0
 	search := textinput.New()
+	search.Cursor.SetMode(cursor.CursorHide)
 	search.Placeholder = "Search workspaces"
 	search.CharLimit = 200
 	m := model{service: s, focus: focus, editor: editor, search: search, ratio: state.DefaultWorkspaceRatio, width: 80, height: 24}

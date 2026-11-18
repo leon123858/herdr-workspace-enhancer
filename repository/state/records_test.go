@@ -51,7 +51,7 @@ func TestListExcludesManagersAndClosedButKeepsTheirNotes(t *testing.T) {
 	for _, r := range []Record{{ID: "active", Status: model.WorkspaceActive}, {ID: "archived", Status: model.WorkspaceArchived}, {ID: "closed", Status: model.WorkspaceClosed, Note: "keep"}, {ID: "manager", HostID: "manager-host", Status: model.WorkspaceActive, ManagerState: model.ManagerDone}} {
 		put(t, s, r)
 	}
-	rows, e := s.List()
+	rows, e := s.ListSortedRecords(context.Background())
 	if e != nil || len(rows) != 2 {
 		t.Fatal(rows, e)
 	}
