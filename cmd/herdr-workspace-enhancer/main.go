@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"herdr-workspace-enhancer/controller"
 	"os"
@@ -16,6 +15,6 @@ func main() {
 
 func run() (err error) {
 	c := controller.New()
-	defer func() { err = errors.Join(err, c.Shutdown()) }()
+	defer func() { err = c.Finish(err, os.Stderr) }()
 	return c.Command().Execute()
 }

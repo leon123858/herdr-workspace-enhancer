@@ -13,7 +13,10 @@ import (
 	"github.com/samber/do/v2"
 )
 
-type Controller struct{ injector do.Injector }
+type Controller struct {
+	injector do.Injector
+	host     *herdr.Client
+}
 
 // New initializes an independent container. Providers remain lazy so help and
 // command validation do not need a Herdr session or touch plugin state.
@@ -32,7 +35,8 @@ func (c *Controller) init() {
 		if b == "" || os.Getenv("HERDR_SOCKET_PATH") == "" || os.Getenv("HERDR_PLUGIN_STATE_DIR") == "" {
 			return nil, fmt.Errorf("launch through Herdr plugin context; required environment is missing")
 		}
-		return herdr.New(b), nil
+		c.host = herdr.New(b)
+		return c.host, nil
 	})
 	do.Provide(i, func(do.Injector) (*state.Store, error) {
 		return state.Open(os.Getenv("HERDR_PLUGIN_STATE_DIR"), os.Getenv("HERDR_SOCKET_PATH"))
