@@ -1,6 +1,6 @@
 id = "workspace.enhancer"
 name = "Workspace Enhancer"
-version = "0.0.1"
+version = "0.0.2"
 min_herdr_version = "0.9.3"
 description = "Workspace notes and archive/restore manager"
 platforms = ["linux", "windows"]
