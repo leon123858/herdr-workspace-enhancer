@@ -10,7 +10,7 @@ import (
 )
 
 func TestDeleteArchived(t *testing.T) {
-	for _, live := range []string{"absent", "host", "temporary"} {
+	for _, live := range []string{"absent", "unrelated", "temporary"} {
 		t.Run(live, func(t *testing.T) {
 			s, h := restoreFixture(t)
 			r, _ := s.Store.Get("record")
@@ -18,7 +18,7 @@ func TestDeleteArchived(t *testing.T) {
 			if err := s.Store.ApplySync(context.Background(), []model.Record{r}); err != nil {
 				t.Fatal(err)
 			}
-			if live == "host" {
+			if live == "unrelated" {
 				h.live = []herdr.Workspace{{ID: "old", Label: "project"}}
 			}
 			if live == "temporary" {
@@ -30,31 +30,35 @@ func TestDeleteArchived(t *testing.T) {
 			if _, err := s.Store.Get("record"); !errors.Is(err, gorm.ErrRecordNotFound) {
 				t.Fatal(err)
 			}
-			if h.closed != (live != "absent") || h.calls != 0 {
+			if h.closed != (live == "temporary") || h.calls != 0 {
 				t.Fatal(h.closed, h.calls)
 			}
 			rows, err := s.Refresh(context.Background())
-			if err != nil || len(rows) != 0 {
+			wantRows := 0
+			if live == "unrelated" {
+				wantRows = 1
+			}
+			if err != nil || len(rows) != wantRows {
 				t.Fatal(rows, err)
 			}
 		})
 	}
 }
 func TestDeleteArchivedFailuresPreserveRecord(t *testing.T) {
-	for _, kind := range []string{"active", "archiving", "closed", "manager", "scan", "close", "lost close"} {
+	for _, kind := range []string{"active", "archiving", "restoring", "closed", "manager", "scan", "close", "lost close"} {
 		t.Run(kind, func(t *testing.T) {
 			s, h := restoreFixture(t)
-			h.live = []herdr.Workspace{{ID: "old"}}
+			h.live = []herdr.Workspace{{ID: "new", Label: restorePrefix + "record"}}
 			r, _ := s.Store.Get("record")
 			switch kind {
-			case "active", "archiving", "closed":
+			case "active", "archiving", "restoring", "closed":
 				r.Status = model.WorkspaceStatus(kind)
 			case "manager":
 				r.ManagerState = model.ManagerDone
 			case "scan":
 				h.scanErr = errors.New("scan failed")
 			case "ambiguous":
-				h.live = append(h.live, herdr.Workspace{ID: "new", Label: restorePrefix + "record"})
+				h.live = append(h.live, herdr.Workspace{ID: "other", Label: restorePrefix + "record"})
 			case "close":
 				h.fail = true
 			case "lost close":
@@ -90,7 +94,7 @@ func (s failedDeleteStore) DeleteArchived(context.Context, string, string) error
 
 func TestDeleteArchivedDatabaseFailureRetry(t *testing.T) {
 	s, h := restoreFixture(t)
-	h.live = []herdr.Workspace{{ID: "old"}}
+	h.live = []herdr.Workspace{{ID: "new", Label: restorePrefix + "record"}}
 	real := s.Store
 	s.Store = failedDeleteStore{real}
 	if err := s.DeleteArchived(context.Background(), "record"); err == nil {

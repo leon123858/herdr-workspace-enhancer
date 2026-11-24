@@ -11,7 +11,7 @@ import (
 )
 
 // Main DB version, incremented for each schema change. See migrations.Provider.
-const CurrentDBVersion int64 = 1
+const CurrentDBVersion int64 = 2
 
 // databaseVersion deliberately does not call Provider.GetDBVersion, which can
 // initialize Goose's table. Existing databases must already be managed.

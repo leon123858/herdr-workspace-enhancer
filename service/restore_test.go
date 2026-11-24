@@ -95,18 +95,18 @@ func restoreFixture(t *testing.T) (*Service, *restoreHost) {
 	dir := t.TempDir()
 	leaf := func() *layout.Node { return &layout.Node{Type: layout.NodePane, CWD: dir} }
 	snap := &herdr.Snapshot{Label: "project", Tabs: []herdr.SavedTab{{Label: "one", Root: &layout.Node{Type: layout.NodeSplit, Direction: "right", Ratio: .4, First: leaf(), Second: leaf()}}, {Label: "two", Root: leaf()}}}
-	saveRecord(t, store, model.Record{ID: "record", HostID: "old", Label: "project", Status: model.WorkspaceArchived, Snapshot: snap, Note: "keep note"})
+	saveRecord(t, store, model.Record{ID: "record", Label: "project", Status: model.WorkspaceArchived, Snapshot: snap, Note: "keep note"})
 	host := &restoreHost{fakeHost: fakeHost{live: []herdr.Workspace{}}}
 	return &Service{Store: store, Host: host}, host
 }
 
-func TestRestoreKeepsArchivedUntilSync(t *testing.T) {
+func TestRestoreSetsRestoringUntilSync(t *testing.T) {
 	s, h := restoreFixture(t)
 	if e := s.Restore(context.Background(), "record"); e != nil {
 		t.Fatal(e)
 	}
 	r, e := s.Store.Get("record")
-	if e != nil || r.Status != model.WorkspaceArchived || r.HostID != "old" || h.calls != 1 {
+	if e != nil || r.Status != model.WorkspaceRestoring || r.HostID != "" || h.calls != 1 {
 		t.Fatal(r, e, h.calls)
 	}
 	h.layoutHook = func() error { _, err := s.Store.Save("record", "edited during restore"); return err }
@@ -128,7 +128,7 @@ func TestPartialRestoreRetries(t *testing.T) {
 				t.Fatal("expected failure")
 			}
 			r, _ := s.Store.Get("record")
-			if r.Status != model.WorkspaceArchived {
+			if r.Status != model.WorkspaceRestoring {
 				t.Fatal(r)
 			}
 			if err := s.Restore(context.Background(), "record"); err != nil {
@@ -188,7 +188,7 @@ func TestRestoreCommitFailureRetriesAfterRename(t *testing.T) {
 		t.Fatal("expected commit failure")
 	}
 	r, _ := s.Store.Get("record")
-	if r.Status != model.WorkspaceArchived || h.live[0].Label != "project" {
+	if r.Status != model.WorkspaceRestoring || h.live[0].Label != "project" {
 		t.Fatal(r, h.live)
 	}
 	if _, err := s.Refresh(context.Background()); err != nil {
@@ -199,11 +199,12 @@ func TestRestoreCommitFailureRetriesAfterRename(t *testing.T) {
 func TestInvalidRestoreDoesNotBlockOtherItems(t *testing.T) {
 	s, h := restoreFixture(t)
 	r, _ := s.Store.Get("record")
+	r.Status = model.WorkspaceRestoring
 	r.Snapshot = nil
 	if err := s.Store.ApplySync(context.Background(), []model.Record{r}); err != nil {
 		t.Fatal(err)
 	}
-	h.live = []herdr.Workspace{{ID: "old"}, {ID: "unrelated", Label: "other"}}
+	h.live = []herdr.Workspace{{ID: "new", Label: restorePrefix + "record"}, {ID: "unrelated", Label: "other"}}
 	if _, err := s.Refresh(context.Background()); err == nil {
 		t.Fatal("expected invalid snapshot")
 	}
@@ -244,7 +245,7 @@ func TestRestoreRetryReportsReconciliationFailure(t *testing.T) {
 		t.Fatal("retry hid reconciliation failure")
 	}
 	r, err := s.Store.Get("record")
-	if err != nil || r.Status != model.WorkspaceArchived || len(h.live) != 1 {
+	if err != nil || r.Status != model.WorkspaceRestoring || len(h.live) != 1 {
 		t.Fatal(r, err, h.live)
 	}
 	h.failAt = 0

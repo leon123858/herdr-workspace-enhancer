@@ -23,6 +23,19 @@ func (s *Store) ArchiveIntent(ctx context.Context, id, host string, snapshot *mo
 	return nil
 }
 
+func (s *Store) RestoreIntent(ctx context.Context, id string) error {
+	result := s.db.WithContext(ctx).Model(&workspaceRow{}).
+		Where("id = ? AND host_id IS NULL AND status = ? AND manager_state = ?", id, model.WorkspaceArchived, model.ManagerNone).
+		Update("status", model.WorkspaceRestoring)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("workspace changed before restore intent was saved")
+	}
+	return nil
+}
+
 func (s *Store) CreateManager(ctx context.Context, r Record) error {
 	if r.ID == "" || r.ManagerState != model.ManagerInit || r.Status != model.WorkspaceClosed || r.HostID != "" {
 		return fmt.Errorf("invalid manager intent")
@@ -45,7 +58,7 @@ func (s *Store) ApplySync(ctx context.Context, records []Record) error {
 		}
 		seen[r.ID] = true
 		switch r.Status {
-		case model.WorkspaceActive, model.WorkspaceArchiving, model.WorkspaceArchived, model.WorkspaceClosed:
+		case model.WorkspaceActive, model.WorkspaceArchiving, model.WorkspaceArchived, model.WorkspaceRestoring, model.WorkspaceClosed:
 		default:
 			return fmt.Errorf("invalid workspace status %q", r.Status)
 		}
@@ -84,7 +97,7 @@ func (s *Store) FindHost(ctx context.Context, host string) (Record, error) {
 	return r.record(), err
 }
 func (s *Store) CompleteRestore(ctx context.Context, id, host string) error {
-	result := s.db.WithContext(ctx).Model(&workspaceRow{}).Where("id = ? AND host_id = ? AND status = ? AND manager_state = ?", id, host, model.WorkspaceArchived, model.ManagerNone).Update("status", model.WorkspaceActive)
+	result := s.db.WithContext(ctx).Model(&workspaceRow{}).Where("id = ? AND host_id = ? AND status = ? AND manager_state = ?", id, host, model.WorkspaceRestoring, model.ManagerNone).Update("status", model.WorkspaceActive)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -96,7 +109,13 @@ func (s *Store) CompleteRestore(ctx context.Context, id, host string) error {
 
 // DeleteArchived is conditional so a stale request cannot delete an active record.
 func (s *Store) DeleteArchived(ctx context.Context, id, host string) error {
-	result := s.db.WithContext(ctx).Where("id = ? AND host_id = ? AND status = ? AND manager_state = ?", id, host, model.WorkspaceArchived, model.ManagerNone).Delete(&workspaceRow{})
+	q := s.db.WithContext(ctx).Where("id = ? AND status = ? AND manager_state = ?", id, model.WorkspaceArchived, model.ManagerNone)
+	if host == "" {
+		q = q.Where("host_id IS NULL")
+	} else {
+		q = q.Where("host_id = ?", host)
+	}
+	result := q.Delete(&workspaceRow{})
 	if result.Error != nil {
 		return result.Error
 	}

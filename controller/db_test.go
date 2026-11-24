@@ -21,12 +21,12 @@ func TestDBCommands(t *testing.T) {
 		want string
 		fail bool
 	}{
-		{[]string{"db", "version"}, "1", false},
+		{[]string{"db", "version"}, "2", false},
 		{[]string{"db", "migrate"}, "", true},
-		{[]string{"db", "migrate", "--to", "2"}, "", true},
+		{[]string{"db", "migrate", "--to", "3"}, "", true},
 		{[]string{"db", "migrate", "--to", "0"}, "Backup:", false},
 		{[]string{"db", "version"}, "0", false},
-		{[]string{"db", "migrate", "--to", "1"}, "Database version: 1", false},
+		{[]string{"db", "migrate", "--to", "2"}, "Database version: 2", false},
 	} {
 		c := New()
 		cmd := c.Command()

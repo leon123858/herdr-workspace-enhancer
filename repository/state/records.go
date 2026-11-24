@@ -68,8 +68,11 @@ func (s *Store) Get(id string) (Record, error) {
 	return r.record(), err
 }
 func (s *Store) IsManager(hostID string) (bool, error) {
+	if hostID == "" {
+		return false, nil
+	}
 	var count int64
-	err := s.db.Model(&workspaceRow{}).Where("host_id = ? AND manager_state <> ?", hostID, model.ManagerNone).Count(&count).Error
+	err := s.db.Model(&workspaceRow{}).Where("host_id = ? AND status <> ? AND manager_state <> ?", hostID, model.WorkspaceClosed, model.ManagerNone).Count(&count).Error
 	return count > 0, err
 }
 

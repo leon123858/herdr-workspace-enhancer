@@ -58,7 +58,7 @@ func TestMigrationTargetAndConcurrentInitialization(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if v, err := DBVersion(root, "test"); err != nil || v != 1 {
+	if v, err := DBVersion(root, "test"); err != nil || v != CurrentDBVersion {
 		t.Fatal(v, err)
 	}
 }
@@ -107,7 +107,7 @@ func TestManagedRoundTripBackupAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if v, err := databaseVersion(context.Background(), b); err != nil || v != 1 {
+	if v, err := databaseVersion(context.Background(), b); err != nil || v != CurrentDBVersion {
 		t.Fatal(v, err)
 	}
 	var note string
@@ -165,7 +165,7 @@ func TestManagedRoundTripBackupAndRollback(t *testing.T) {
 	if len(files) != len(again) {
 		t.Fatal("reopen migrated again")
 	}
-	s.db.Exec(`INSERT INTO goose_db_version(version_id,is_applied) VALUES(2,1)`)
+	s.db.Exec(`INSERT INTO goose_db_version(version_id,is_applied) VALUES(3,1)`)
 	if _, err := Open(root, "test"); err == nil {
 		t.Fatal("accepted newer DB")
 	}
@@ -173,5 +173,42 @@ func TestManagedRoundTripBackupAndRollback(t *testing.T) {
 	s.db.Exec(`CREATE TABLE goose_db_version(bad text)`)
 	if _, err := Open(root, "test"); err == nil {
 		t.Fatal("ignored invalid version metadata")
+	}
+}
+
+func TestMigrationV2ClearsInactiveHostID(t *testing.T) {
+	root := t.TempDir()
+	if _, err := MigrateDB(root, "test", 1); err != nil {
+		t.Fatal(err)
+	}
+	s, err := openDatabase(root, "test", false, func(*Store) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []Record{
+		{ID: "active", HostID: "h-active", Status: "active"},
+		{ID: "archiving", HostID: "h-archiving", Status: "archiving"},
+		{ID: "archived", HostID: "h-archived", Status: "archived"},
+		{ID: "closed", HostID: "h-closed", Status: "closed"},
+	} {
+		put(t, s, r)
+	}
+	s.Close()
+
+	upgraded, err := Open(root, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	for id, wantHost := range map[string]string{
+		"active":    "h-active",
+		"archiving": "h-archiving",
+		"archived":  "",
+		"closed":    "",
+	} {
+		r, err := upgraded.Get(id)
+		if err != nil || r.HostID != wantHost {
+			t.Fatalf("%s: got host=%q err=%v, want %q", id, r.HostID, err, wantHost)
+		}
 	}
 }

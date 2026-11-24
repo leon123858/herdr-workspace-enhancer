@@ -23,7 +23,10 @@ import (
 func Provider(db *sql.DB) (*goose.Provider, error) {
 	return goose.NewProvider(goose.DialectSQLite3, db, nil,
 		goose.WithDisableGlobalRegistry(true),
-		goose.WithGoMigrations(goose.NewGoMigration(1, &goose.GoFunc{RunTx: upWorkspaceOrder}, &goose.GoFunc{RunTx: downWorkspaceOrder})))
+		goose.WithGoMigrations(
+			goose.NewGoMigration(1, &goose.GoFunc{RunTx: upWorkspaceOrder}, &goose.GoFunc{RunTx: downWorkspaceOrder}),
+			goose.NewGoMigration(2, &goose.GoFunc{RunTx: upClearInactiveHostID}, &goose.GoFunc{RunTx: downClearInactiveHostID}),
+		))
 }
 
 func upWorkspaceOrder(ctx context.Context, tx *sql.Tx) error {
@@ -51,5 +54,16 @@ func downWorkspaceOrder(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return fmt.Errorf("remove ordering: %w", err)
 	}
+	return nil
+}
+
+func upClearInactiveHostID(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE workspaces SET host_id = NULL WHERE status IN ('closed', 'archived')`); err != nil {
+		return fmt.Errorf("clear inactive host_id: %w", err)
+	}
+	return nil
+}
+
+func downClearInactiveHostID(_ context.Context, _ *sql.Tx) error {
 	return nil
 }

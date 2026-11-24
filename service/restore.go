@@ -57,29 +57,19 @@ func (s *Service) Restore(ctx context.Context, id string) error {
 	if r.ManagerState != model.ManagerNone {
 		return fmt.Errorf("cannot restore manager workspace")
 	}
-	if r.Status != model.WorkspaceArchived {
-		return fmt.Errorf("workspace is %s", r.Status)
-	}
-	live, err := s.Host.Workspaces(ctx)
-	if err != nil {
-		return err
-	}
-	count := 0
-	for _, w := range live {
-		if w.ID == r.HostID || w.Label == restorePrefix+r.ID {
-			count++
-		}
-	}
-	if count > 1 {
-		return fmt.Errorf("ambiguous restore candidates for %s", r.ID)
-	}
-	if count == 1 {
+	if r.Status == model.WorkspaceRestoring {
 		// The session lock is already held. A previous sync may have failed,
-		// so do not wait for a creation event that will not be emitted again.
+		// so reconcile immediately instead of creating another workspace.
 		_, err := s.refreshLocked(ctx)
 		return err
 	}
+	if r.Status != model.WorkspaceArchived {
+		return fmt.Errorf("workspace is %s", r.Status)
+	}
 	if err := validateRestore(r); err != nil {
+		return err
+	}
+	if err := s.Store.RestoreIntent(ctx, id); err != nil {
 		return err
 	}
 	if err := caller.Call(ctx, nil, "workspace", "create", "--cwd", first(r.Snapshot.Tabs[0].Root).CWD, "--label", restorePrefix+r.ID, "--no-focus"); err != nil {
@@ -107,10 +97,6 @@ func (s *Service) restoreWorkspace(ctx context.Context, r model.Record, w herdr.
 	caller, ok := s.Host.(Caller)
 	if !ok {
 		return fmt.Errorf("host does not support restoration")
-	}
-	r.HostID = w.ID
-	if err := s.Store.ApplySync(ctx, []model.Record{r}); err != nil {
-		return fmt.Errorf("bind restore: %w", err)
 	}
 	var listed struct {
 		Tabs []herdr.Tab `json:"tabs"`

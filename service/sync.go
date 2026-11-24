@@ -93,20 +93,14 @@ func (s *Service) syncItems(ctx context.Context, live []herdr.Workspace) ([]sync
 		warn(db.add(records[i].ID, records[i].HostID, &records[i]))
 	}
 
-	// use host ws try to bind record in db,
-	// if not found, try to find record by label prefix
-	// so may have to key: host id or record id.
+	// Try to bind host ws to a record by label prefix (manager/restore).
+	// Closed records do not hold host_id; active/archiving/restoring records are
+	// already loaded from ListNonClosedRecords above.
 	for _, e := range hosts.entries() {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		w := e.value
-		r, err := s.Store.FindHost(ctx, w.ID)
-		if err == nil {
-			warn(db.add(r.ID, r.HostID, &r))
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
-		}
 		for _, prefix := range []string{managerPrefix, restorePrefix} {
 			if !strings.HasPrefix(w.Label, prefix) {
 				continue
@@ -228,6 +222,8 @@ func (s *Service) wsFSM(ctx context.Context, action wsAction, item *syncItem) (e
 		r.Status = status
 		if item.workspace != nil {
 			r.HostID = item.workspace.ID
+		} else if status == model.WorkspaceClosed || status == model.WorkspaceArchived {
+			r.HostID = ""
 		}
 		if err := s.Store.ApplySync(ctx, []model.Record{r}); err != nil {
 			return err
@@ -265,8 +261,33 @@ func (s *Service) wsFSM(ctx context.Context, action wsAction, item *syncItem) (e
 				return err
 			}
 		case model.WorkspaceArchived:
+			if action == haveHost {
+				if err := s.Host.Close(ctx, item.workspace.ID); err != nil {
+					return err
+				}
+				action = noHost
+				item.workspace = nil
+			}
+			if item.record.HostID != "" {
+				if err := commit(model.WorkspaceArchived); err != nil {
+					return err
+				}
+			}
+			return nil
+		case model.WorkspaceRestoring:
 			if action == noHost {
-				return nil
+				if err := commit(model.WorkspaceArchived); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := validateRestore(*item.record); err != nil {
+				return fmt.Errorf("validate snapshot: %w", err)
+			}
+			if item.record.HostID != item.workspace.ID {
+				if err := commit(model.WorkspaceRestoring); err != nil {
+					return fmt.Errorf("bind restore: %w", err)
+				}
 			}
 			if err := s.restoreWorkspace(ctx, *item.record, *item.workspace); err != nil {
 				return err
@@ -279,6 +300,11 @@ func (s *Service) wsFSM(ctx context.Context, action wsAction, item *syncItem) (e
 			item.workspace.Label = r.Label
 		case model.WorkspaceClosed:
 			if action == noHost {
+				if item.record.HostID != "" {
+					if err := commit(model.WorkspaceClosed); err != nil {
+						return err
+					}
+				}
 				return nil
 			}
 			if err := commit(model.WorkspaceActive); err != nil {

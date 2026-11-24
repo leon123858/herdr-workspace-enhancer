@@ -32,28 +32,31 @@ func TestSyncLifecycleAndExplicitArchive(t *testing.T) {
 		t.Fatal(rows, e)
 	}
 	r, e := store.Get(id)
-	if e != nil || r.Status != model.WorkspaceClosed || r.Note != "keep note" || r.HostID != "w1" {
+	if e != nil || r.Status != model.WorkspaceClosed || r.Note != "keep note" || r.HostID != "" {
 		t.Fatal(r, e)
 	}
-	host.live = []herdr.Workspace{{ID: "w1", Label: "Back"}}
+	// Reused host ID after close must create a new record, not revive the closed one.
+	host.live = []herdr.Workspace{{ID: "w1", Label: "Reused"}}
 	rows, e = s.Refresh(ctx)
-	if e != nil || len(rows) != 1 || rows[0].ID != id || rows[0].Status != model.WorkspaceActive {
+	if e != nil || len(rows) != 1 || rows[0].ID == id || rows[0].Status != model.WorkspaceActive || rows[0].HostID != "w1" {
 		t.Fatal(rows, e)
 	}
-	if e = s.Archive(ctx, id); e != nil {
+	secondID := rows[0].ID
+	if e = s.Archive(ctx, secondID); e != nil {
 		t.Fatal(e)
 	}
 	rows, e = s.Refresh(ctx)
-	if e != nil || len(rows) != 1 || rows[0].Status != model.WorkspaceArchived {
+	if e != nil || len(rows) != 1 || rows[0].Status != model.WorkspaceArchived || rows[0].HostID != "" {
 		t.Fatal("sync changed explicit archive", rows, e)
 	}
-	host.live = []herdr.Workspace{{ID: "w1", Label: "Returns"}}
+	// Reused host ID after archive must create a new active record and leave the archived record untouched.
+	host.live = []herdr.Workspace{{ID: "w1", Label: "Third"}}
 	rows, e = s.Refresh(ctx)
-	if e == nil {
-		t.Fatal("empty snapshot accepted", rows)
+	if e != nil || len(rows) != 2 {
+		t.Fatal("reused host ID collided with archived record", rows, e)
 	}
-	r, e = store.Get(id)
-	if e != nil || r.Status != model.WorkspaceArchived || r.Note != "keep note" {
+	r, e = store.Get(secondID)
+	if e != nil || r.Status != model.WorkspaceArchived || r.HostID != "" {
 		t.Fatal(r, e)
 	}
 }
@@ -109,6 +112,9 @@ func TestManagersAreExcludedByFlag(t *testing.T) {
 
 func TestSyncRebindsLostCreationWithoutLosingNote(t *testing.T) {
 	s, h := restoreFixture(t)
+	if err := s.Store.RestoreIntent(context.Background(), "record"); err != nil {
+		t.Fatal(err)
+	}
 	h.live = []herdr.Workspace{{ID: "new", Label: restorePrefix + "record"}, {ID: "other", Label: restorePrefix + "record"}}
 	items, err := s.syncItems(context.Background(), h.live)
 	if err != nil || len(items) != 2 || items[0].record == nil || items[1].workspace == nil || items[1].record != nil {
@@ -117,7 +123,7 @@ func TestSyncRebindsLostCreationWithoutLosingNote(t *testing.T) {
 
 	h.live = h.live[:1]
 	rows, err := s.Refresh(context.Background())
-	if err != nil || len(rows) != 1 || rows[0].ID != "record" || rows[0].Note != "keep note" {
+	if err != nil || len(rows) != 1 || rows[0].ID != "record" || rows[0].Status != model.WorkspaceActive || rows[0].HostID != "new" || rows[0].Note != "keep note" {
 		t.Fatal(rows, err)
 	}
 }
@@ -188,6 +194,9 @@ func TestSyncOrdinaryLabelsWithInternalPrefixes(t *testing.T) {
 
 func TestSyncBindingBeforeRenameAndRetryCleanup(t *testing.T) {
 	s, h := restoreFixture(t)
+	if err := s.Store.RestoreIntent(context.Background(), "record"); err != nil {
+		t.Fatal(err)
+	}
 	h.live = []herdr.Workspace{{ID: "new", Label: restorePrefix + "record"}}
 	real := s.Store.(*state.Store)
 	s.Store = failingSyncStore{real}
@@ -203,7 +212,7 @@ func TestSyncBindingBeforeRenameAndRetryCleanup(t *testing.T) {
 		t.Fatal("expected rename failure")
 	}
 	r, _ := real.Get("record")
-	if r.HostID != "new" || r.Status != model.WorkspaceArchived || h.live[0].Label != restorePrefix+"record" {
+	if r.HostID != "new" || r.Status != model.WorkspaceRestoring || h.live[0].Label != restorePrefix+"record" {
 		t.Fatal(r, h.live)
 	}
 	h.failAt = 0
@@ -233,7 +242,7 @@ func TestSyncRepairsFailedNewIDCommit(t *testing.T) {
 		t.Fatal("expected failed sync binding")
 	}
 	r, _ := real.Get("record")
-	if r.Status != model.WorkspaceArchived || r.HostID != "old" {
+	if r.Status != model.WorkspaceRestoring || r.HostID != "" {
 		t.Fatal("failed binding committed", r)
 	}
 	s.Store = real
@@ -243,8 +252,8 @@ func TestSyncRepairsFailedNewIDCommit(t *testing.T) {
 	}
 }
 
-func TestSyncFourStateMatrix(t *testing.T) {
-	for _, status := range []model.WorkspaceStatus{model.WorkspaceActive, model.WorkspaceArchiving, model.WorkspaceArchived, model.WorkspaceClosed} {
+func TestSyncFiveStateMatrix(t *testing.T) {
+	for _, status := range []model.WorkspaceStatus{model.WorkspaceActive, model.WorkspaceArchiving, model.WorkspaceArchived, model.WorkspaceRestoring, model.WorkspaceClosed} {
 		for _, exists := range []bool{false, true} {
 			name := string(status) + "/absent"
 			if exists {
@@ -252,26 +261,40 @@ func TestSyncFourStateMatrix(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				store := serviceStore(t)
-				saveRecord(t, store, model.Record{ID: "stable", HostID: "host", Status: status, Note: "retained", Snapshot: &herdr.Snapshot{Tabs: []herdr.SavedTab{{Root: &layout.Node{Type: layout.NodePane, CWD: t.TempDir()}}}}})
+				hostID := "host"
+				label := "project"
+				if status == model.WorkspaceArchived || status == model.WorkspaceClosed {
+					hostID = ""
+				}
+				if status == model.WorkspaceArchived {
+					label = restorePrefix + "stable"
+				}
+				saveRecord(t, store, model.Record{ID: "stable", HostID: hostID, Label: "project", Status: status, Note: "retained", Snapshot: &herdr.Snapshot{Tabs: []herdr.SavedTab{{Root: &layout.Node{Type: layout.NodePane, CWD: t.TempDir()}}}}})
 				live := []herdr.Workspace{}
 				if exists {
-					live = append(live, herdr.Workspace{ID: "host", Label: "project"})
+					live = append(live, herdr.Workspace{ID: "host", Label: label})
 				}
 				svc := Service{Store: store, Host: &restoreHost{fakeHost: fakeHost{live: live}}}
 				if _, err := svc.Refresh(context.Background()); err != nil {
 					t.Fatal(err)
 				}
 				want := status
-				if exists && status != model.WorkspaceArchiving {
-					want = model.WorkspaceActive
-				} else if status == model.WorkspaceActive {
-					want = model.WorkspaceClosed
-				} else if status == model.WorkspaceArchiving {
-					want = model.WorkspaceArchived
+				wantHost := hostID
+				switch {
+				case status == model.WorkspaceActive && !exists:
+					want, wantHost = model.WorkspaceClosed, ""
+				case status == model.WorkspaceArchiving:
+					want, wantHost = model.WorkspaceArchived, ""
+				case status == model.WorkspaceArchived:
+					want, wantHost = model.WorkspaceArchived, ""
+				case status == model.WorkspaceRestoring && !exists:
+					want, wantHost = model.WorkspaceArchived, ""
+				case status == model.WorkspaceRestoring && exists:
+					want, wantHost = model.WorkspaceActive, "host"
 				}
 				got, err := store.Get("stable")
-				if err != nil || got.Status != want || got.Note != "retained" {
-					t.Fatal(got, err, "want", want)
+				if err != nil || got.Status != want || got.HostID != wantHost || got.Note != "retained" {
+					t.Fatal(got, err, "want", want, wantHost)
 				}
 			})
 		}

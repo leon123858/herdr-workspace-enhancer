@@ -88,7 +88,7 @@ func (m model) Init() tea.Cmd {
 func (m model) visible() []state.Record {
 	var rows []state.Record
 	for _, r := range m.records {
-		if m.filter == FilterActive && r.Status != state.WorkspaceActive || m.filter == FilterArchived && r.Status != state.WorkspaceArchived {
+		if m.filter == FilterActive && r.Status != state.WorkspaceActive || m.filter == FilterArchived && r.Status != state.WorkspaceArchived && r.Status != state.WorkspaceRestoring {
 			continue
 		}
 		if strings.Contains(strings.ToLower(r.Label), strings.ToLower(m.search.Value())) {
@@ -251,7 +251,7 @@ func (m *model) execute(a action) tea.Cmd {
 		if ok {
 			m.busy = true
 			return func() tea.Msg {
-				if r.Status == state.WorkspaceArchived {
+				if r.Status == state.WorkspaceArchived || r.Status == state.WorkspaceRestoring {
 					return finished{m.service.Restore(context.Background(), r.ID)}
 				}
 				if r.Status == state.WorkspaceActive && m.focus != nil {

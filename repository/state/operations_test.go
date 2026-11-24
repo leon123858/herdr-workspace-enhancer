@@ -29,6 +29,22 @@ func TestArchiveIntentConditionalWrite(t *testing.T) {
 	}
 }
 
+func TestRestoreIntentConditionalWrite(t *testing.T) {
+	s := testStore(t, t.TempDir())
+	ctx := context.Background()
+	put(t, s, Record{ID: "a", Status: model.WorkspaceArchived, Note: "keep"})
+	if err := s.RestoreIntent(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := s.Get("a")
+	if r.Status != model.WorkspaceRestoring || r.HostID != "" || r.Note != "keep" {
+		t.Fatal(r)
+	}
+	if err := s.RestoreIntent(ctx, "a"); err == nil {
+		t.Fatal("accepted repeated restore intent")
+	}
+}
+
 func TestApplySyncAtomicAndPreservesLatestNote(t *testing.T) {
 	s := testStore(t, t.TempDir())
 	ctx := context.Background()
@@ -73,10 +89,11 @@ func TestCompleteRestoreConditionalWrite(t *testing.T) {
 		host    string
 		success bool
 	}{
-		{"valid", model.WorkspaceArchived, model.ManagerNone, "h", true},
-		{"wrong host", model.WorkspaceArchived, model.ManagerNone, "other", false},
+		{"valid", model.WorkspaceRestoring, model.ManagerNone, "h", true},
+		{"archived", model.WorkspaceArchived, model.ManagerNone, "h", false},
+		{"wrong host", model.WorkspaceRestoring, model.ManagerNone, "other", false},
 		{"active", model.WorkspaceActive, model.ManagerNone, "h", false},
-		{"manager", model.WorkspaceArchived, model.ManagerInit, "h", false},
+		{"manager", model.WorkspaceRestoring, model.ManagerInit, "h", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testStore(t, t.TempDir())
@@ -99,20 +116,24 @@ func TestCompleteRestoreConditionalWrite(t *testing.T) {
 
 func TestDeleteArchivedConditional(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		status  model.WorkspaceStatus
-		manager model.ManagerState
-		host    string
-		ok      bool
+		name     string
+		status   model.WorkspaceStatus
+		manager  model.ManagerState
+		seedHost string
+		host     string
+		ok       bool
 	}{
-		{"archived", model.WorkspaceArchived, model.ManagerNone, "h", true},
-		{"active", model.WorkspaceActive, model.ManagerNone, "h", false},
-		{"manager", model.WorkspaceArchived, model.ManagerInit, "h", false},
-		{"stale host", model.WorkspaceArchived, model.ManagerNone, "old", false},
+		{"archived null host", model.WorkspaceArchived, model.ManagerNone, "", "", true},
+		{"archived null host mismatch", model.WorkspaceArchived, model.ManagerNone, "", "h", false},
+		{"archived", model.WorkspaceArchived, model.ManagerNone, "h", "h", true},
+		{"active", model.WorkspaceActive, model.ManagerNone, "h", "h", false},
+		{"restoring", model.WorkspaceRestoring, model.ManagerNone, "h", "h", false},
+		{"manager", model.WorkspaceArchived, model.ManagerInit, "h", "h", false},
+		{"stale host", model.WorkspaceArchived, model.ManagerNone, "h", "old", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testStore(t, t.TempDir())
-			put(t, s, Record{ID: "r", HostID: "h", Status: tc.status, ManagerState: tc.manager, Note: "note"})
+			put(t, s, Record{ID: "r", HostID: tc.seedHost, Status: tc.status, ManagerState: tc.manager, Note: "note"})
 			err := s.DeleteArchived(context.Background(), "r", tc.host)
 			if (err == nil) != tc.ok {
 				t.Fatal(err)

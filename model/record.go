@@ -16,6 +16,7 @@ const (
 	WorkspaceActive    WorkspaceStatus = "active"
 	WorkspaceArchiving WorkspaceStatus = "archiving"
 	WorkspaceArchived  WorkspaceStatus = "archived"
+	WorkspaceRestoring WorkspaceStatus = "restoring"
 	WorkspaceClosed    WorkspaceStatus = "closed"
 )
 
@@ -38,6 +39,7 @@ type WorkspaceStore interface {
 	DeleteArchived(context.Context, string, string) error
 	ApplySync(context.Context, []Record) error
 	ArchiveIntent(context.Context, string, string, *Snapshot) error
+	RestoreIntent(context.Context, string) error
 	CreateManager(context.Context, Record) error
 	CompleteManager(context.Context, string, string) error
 	Get(string) (Record, error)

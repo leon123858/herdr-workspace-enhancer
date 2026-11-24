@@ -11,19 +11,33 @@ func TestClosedManagerResolution(t *testing.T) {
 	for _, managerState := range []model.ManagerState{model.ManagerNone, model.ManagerInit, model.ManagerDone} {
 		t.Run(string(managerState), func(t *testing.T) {
 			store := serviceStore(t)
-			saveRecord(t, store, model.Record{ID: "r", HostID: "h", Label: "manager", Status: model.WorkspaceClosed, ManagerState: managerState, Note: "note"})
-			host := &restoreHost{fakeHost: fakeHost{live: []herdr.Workspace{{ID: "h", Label: "manager"}}}}
+			saveRecord(t, store, model.Record{ID: "r", Label: "manager", Status: model.WorkspaceClosed, ManagerState: managerState, Note: "note"})
+			label := "reused"
+			if managerState == model.ManagerInit {
+				label = managerPrefix + "r"
+			}
+			host := &restoreHost{fakeHost: fakeHost{live: []herdr.Workspace{{ID: "h", Label: label}}}}
 			svc := Service{Store: store, Host: host}
-			_, err := svc.Refresh(context.Background())
+			rows, err := svc.Refresh(context.Background())
 			// This host has no manager panes: INIT must stay retryable after binding.
 			if (err != nil) != (managerState == model.ManagerInit) {
 				t.Fatal(err)
 			}
 			r, e := store.Get("r")
-			if e != nil || r.Status != model.WorkspaceActive || r.ManagerState != managerState || r.Note != "note" {
+			if managerState == model.ManagerInit {
+				if e != nil || r.Status != model.WorkspaceActive || r.HostID != "h" || r.ManagerState != model.ManagerInit || r.Note != "note" {
+					t.Fatal(r, e)
+				}
+				return
+			}
+			// Closed NONE/DONE records must not be revived by a reused host ID.
+			if e != nil || r.Status != model.WorkspaceClosed || r.HostID != "" || r.ManagerState != managerState || r.Note != "note" {
 				t.Fatal(r, e)
 			}
-			if managerState != model.ManagerInit && host.calls != 0 {
+			if len(rows) != 1 || rows[0].ID == "r" || rows[0].HostID != "h" || rows[0].ManagerState != model.ManagerNone {
+				t.Fatal(rows)
+			}
+			if host.calls != 0 {
 				t.Fatal(host.calls)
 			}
 		})
