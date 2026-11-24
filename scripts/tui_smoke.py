@@ -23,7 +23,8 @@ binary = str(Path(sys.argv[1] if len(sys.argv) > 1 else 'bin/herdr-workspace-enh
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
     fake = root / 'herdr'
-    fake.write_text('#!/usr/bin/env python3\nimport json\nprint(json.dumps({"result":{"workspaces":[{"workspace_id":"h1","label":"Example project"},{"workspace_id":"h2","label":"Second project"}]}}))\n')
+    # The manager is a live host workspace too; omitting it makes sync close it.
+    fake.write_text('#!/usr/bin/env python3\nimport json\nprint(json.dumps({"result":{"workspaces":[{"workspace_id":"h1","label":"Example project"},{"workspace_id":"h2","label":"Second project"},{"workspace_id":"manager","label":"Workspace Enhancer"}]}}))\n')
     fake.chmod(0o755)
     clipboard = root / 'clipboard.txt'
     long_note = '中文筆記\n' * 149 + '最後一行'
@@ -50,8 +51,8 @@ with tempfile.TemporaryDirectory() as tmp:
     with sqlite3.connect(database) as db:
         ids = dict(db.execute('SELECT host_id, id FROM workspaces'))
         note_ids = {'one': ids['h1'], 'two': ids['h2']}
-        db.execute('INSERT INTO workspaces (id, host_id, label, status, manager_state) VALUES (?, ?, ?, ?, ?)',
-                   ('manager-record', 'manager', 'Workspace Enhancer', 'active', 'DONE'))
+        db.execute('UPDATE workspaces SET manager_state = ? WHERE host_id = ?',
+                   ('DONE', 'manager'))
         db.execute('UPDATE workspaces SET note = ? WHERE id = ?', ('Side preview', note_ids['two']))
     def read_note(identity):
         with sqlite3.connect(database) as db:
@@ -129,6 +130,10 @@ with tempfile.TemporaryDirectory() as tmp:
         proc.wait(timeout=5)
         assert proc.returncode == 0, output
         # Reopen at another terminal width; loading must preserve the preference.
+        with sqlite3.connect(database) as db:
+            manager = db.execute('SELECT host_id, status, manager_state FROM workspaces WHERE id = ?',
+                                 (ids['manager'],)).fetchone()
+            assert manager == ('manager', 'active', 'DONE'), manager
         proc = start()
         read(1)
         send(b'q')
